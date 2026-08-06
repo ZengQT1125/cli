@@ -517,8 +517,45 @@
   }
 
   .nav-section-plugin-pages {
+    gap: $spacing-xs;
     padding-top: $spacing-md;
     border-top: 1px solid color-mix(in srgb, var(--border-color) 72%, transparent);
+
+    // 插件页：较紧凑的次级导航，便于容纳更多插件
+    .nav-item {
+      padding: 6px 8px;
+      border-radius: 7px;
+      font-size: 13px;
+      font-weight: 500;
+      gap: $spacing-sm;
+
+      .nav-text {
+        gap: 0;
+      }
+
+      .nav-icon {
+        width: 22px;
+        height: 22px;
+        border-radius: 6px;
+
+        svg,
+        img {
+          width: 15px;
+          height: 15px;
+        }
+      }
+
+      .nav-meta {
+        font-size: 10.5px;
+        margin-top: 1px;
+      }
+    }
+
+    .nav-sub-item {
+      min-height: 30px;
+      padding: 5px 8px;
+      font-size: 12.5px;
+    }
   }
 
   .nav-group-label {
@@ -711,22 +748,34 @@
   // Background gradient and mouse responsive pointer glow from render.js
   background-attachment: fixed;
   background-image:
-    radial-gradient(circle at var(--mouse-x, 50%) var(--mouse-y, 20%), rgba(239, 112, 72, 0.14), transparent 22rem),
-    radial-gradient(circle at calc(100% - var(--mouse-x, 50%)) 8%, rgba(6, 79, 87, 0.16), transparent 30rem),
+    radial-gradient(
+      circle at var(--mouse-x, 50%) var(--mouse-y, 20%),
+      rgba(239, 112, 72, 0.14),
+      transparent 22rem
+    ),
+    radial-gradient(
+      circle at calc(100% - var(--mouse-x, 50%)) 8%,
+      rgba(6, 79, 87, 0.16),
+      transparent 30rem
+    ),
     linear-gradient(180deg, #f8fbfc 0%, var(--bg-secondary) 44%, #dfeaf0 100%);
 
   position: relative;
   z-index: 1;
 
   &::before {
-    content: "";
+    content: '';
     position: absolute;
     inset: 0;
     pointer-events: none;
     z-index: -1;
     background-image:
       linear-gradient(115deg, rgba(6, 79, 87, 0.06), transparent 34%),
-      radial-gradient(circle at var(--mouse-x, 50%) var(--mouse-y, 20%), rgba(255, 255, 255, 0.72), transparent 17rem);
+      radial-gradient(
+        circle at var(--mouse-x, 50%) var(--mouse-y, 20%),
+        rgba(255, 255, 255, 0.72),
+        transparent 17rem
+      );
     opacity: 0.85;
     transition: opacity 0.25s ease;
   }
@@ -735,7 +784,11 @@
     opacity: 0.05;
     background-image:
       linear-gradient(115deg, rgba(255, 255, 255, 0.02), transparent 34%),
-      radial-gradient(circle at var(--mouse-x, 50%) var(--mouse-y, 20%), rgba(0, 0, 0, 0.5), transparent 17rem);
+      radial-gradient(
+        circle at var(--mouse-x, 50%) var(--mouse-y, 20%),
+        rgba(0, 0, 0, 0.5),
+        transparent 17rem
+      );
   }
 
   &.content-logs {
