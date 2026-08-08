@@ -130,6 +130,7 @@
       "all_provider_types": "全部请求类型",
       "success": "成功",
       "failed": "失败",
+      "fast_badge": "快速",
       "last_update": "最后更新",
       "manual_refresh": "手动刷新",
       "refresh_5s": "5秒刷新",
@@ -145,6 +146,10 @@
       "header_model": "请求模型",
       "header_source": "请求渠道",
       "header_status": "请求状态",
+      "header_request_key": "请求 Key",
+      "search_sources": "搜索请求渠道",
+      "no_sources_found": "未找到请求渠道",
+      "source_results_limited": "结果过多，仅显示部分渠道",
       "header_recent": "最近请求状态",
       "header_rate": "成功率",
       "header_count": "请求数",
@@ -164,6 +169,7 @@
       "prev_page": "上一页",
       "next_page": "下一页",
       "last_page": "末页",
+      "page_size_label": "每页条数",
       "page_size_20": "每页 20 条",
       "page_size_50": "每页 50 条",
       "page_size_100": "每页 100 条",
@@ -184,7 +190,8 @@
       "disable_unsupported_guide_step2": "2. 找到对应的 {{providerType}} 配置",
       "disable_unsupported_guide_step3": "3. 编辑配置，移除模型「{{model}}」",
       "disable_unsupported_guide_step4": "4. 保存配置即可生效",
-      "disable_unsupported_close": "我知道了"
+      "disable_unsupported_close": "我知道了",
+      "all_request_keys": "全部请求 Key"
     }
   }
 }

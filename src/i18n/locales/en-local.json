@@ -130,6 +130,7 @@
       "all_provider_types": "All Providers",
       "success": "Success",
       "failed": "Failed",
+      "fast_badge": "Fast",
       "last_update": "Last Update",
       "manual_refresh": "Manual Refresh",
       "refresh_5s": "5s Refresh",
@@ -145,6 +146,10 @@
       "header_model": "Model",
       "header_source": "Source",
       "header_status": "Status",
+      "header_request_key": "Request Key",
+      "search_sources": "Search sources",
+      "no_sources_found": "No sources found",
+      "source_results_limited": "Too many results, showing a subset",
       "header_recent": "Recent Status",
       "header_rate": "Success Rate",
       "header_count": "Requests",
@@ -164,6 +169,7 @@
       "prev_page": "Prev",
       "next_page": "Next",
       "last_page": "Last",
+      "page_size_label": "Page size",
       "page_size_20": "20 per page",
       "page_size_50": "50 per page",
       "page_size_100": "100 per page",
@@ -184,7 +190,8 @@
       "disable_unsupported_guide_step2": "2. Find the corresponding {{providerType}} configuration",
       "disable_unsupported_guide_step3": "3. Edit the config and remove model \"{{model}}\"",
       "disable_unsupported_guide_step4": "4. Save the configuration to apply changes",
-      "disable_unsupported_close": "Got it"
+      "disable_unsupported_close": "Got it",
+      "all_request_keys": "All Request Keys"
     }
   }
 }
