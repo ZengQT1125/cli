@@ -5,6 +5,7 @@ import CodeMirror, { ReactCodeMirrorRef } from '@uiw/react-codemirror';
 import { yaml } from '@codemirror/lang-yaml';
 import { search, searchKeymap, highlightSelectionMatches } from '@codemirror/search';
 import { keymap } from '@codemirror/view';
+import { lightCodeMirrorTheme, darkCodeMirrorTheme } from '@/components/config/codemirrorTheme';
 import { parse as parseYaml, parseDocument } from 'yaml';
 import { Card } from '@/components/ui/Card';
 import { Button } from '@/components/ui/Button';
@@ -480,10 +481,17 @@ export function ConfigPage() {
     };
   }, []);
 
-  // CodeMirror extensions
+  // CodeMirror extensions：按主题叠加自定义高亮与选中背景，提升可读性
+  const editorTheme = resolvedTheme === 'dark' ? darkCodeMirrorTheme : lightCodeMirrorTheme;
   const extensions = useMemo(
-    () => [yaml(), search(), highlightSelectionMatches(), keymap.of(searchKeymap)],
-    []
+    () => [
+      yaml(),
+      search(),
+      highlightSelectionMatches(),
+      keymap.of(searchKeymap),
+      editorTheme,
+    ],
+    [editorTheme]
   );
 
   // Status text
