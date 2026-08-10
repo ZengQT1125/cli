@@ -12,20 +12,22 @@ import { tags } from '@lezer/highlight';
  *  - 更明显、偏灰的选中背景
  */
 
+// 亮色采用与深色主题（OneDark 风格）同族的 One Light 配色，
+// 色相关系一一对应、观感统一，仅做亮度适配以保证浅色背景下可读。
 const lightHighlightStyle = HighlightStyle.define([
-  { tag: tags.comment, color: '#64748b', fontStyle: 'italic' },
-  { tag: tags.propertyName, color: '#0550ae' }, // YAML 键名
-  { tag: tags.string, color: '#116329' }, // 字符串
-  { tag: tags.number, color: '#a05a00' }, // 数字
-  { tag: tags.bool, color: '#7c3aed' }, // 布尔
-  { tag: tags.null, color: '#7c3aed' }, // null
-  { tag: tags.keyword, color: '#cf222e' },
-  { tag: tags.operator, color: '#0a3069' },
-  { tag: tags.punctuation, color: '#57606a' },
-  { tag: tags.meta, color: '#0a3069' },
-  { tag: tags.tagName, color: '#116329' },
-  { tag: tags.invalid, color: '#cf222e' },
-  { tag: tags.heading, color: '#0550ae', fontWeight: '600' },
+  { tag: tags.comment, color: '#a0a1a7', fontStyle: 'italic' },
+  { tag: tags.propertyName, color: '#e45649' }, // YAML 键名（对应深色 #e06c75 红粉）
+  { tag: tags.string, color: '#50a14f' }, // 字符串（对应深色 #98c379 绿）
+  { tag: tags.number, color: '#986801' }, // 数字（对应深色 #d19a66 橙）
+  { tag: tags.bool, color: '#0184bc' }, // 布尔（对应深色 #56b6c2 青）
+  { tag: tags.null, color: '#0184bc' }, // null
+  { tag: tags.keyword, color: '#a626a4' }, // 关键字（对应深色 #c678dd 紫）
+  { tag: tags.operator, color: '#4078f2' }, // 对应深色 #61afef 蓝
+  { tag: tags.punctuation, color: '#383a42' },
+  { tag: tags.meta, color: '#4078f2' },
+  { tag: tags.tagName, color: '#c18401' }, // 对应深色 #e5c07b 黄
+  { tag: tags.invalid, color: '#e45649' },
+  { tag: tags.heading, color: '#4078f2', fontWeight: '600' },
 ]);
 
 const darkHighlightStyle = HighlightStyle.define([
