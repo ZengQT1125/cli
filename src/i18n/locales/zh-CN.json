@@ -431,6 +431,8 @@
     "openai_keys_import_hint": "请输入要导入的密钥，一行一个。可选：可在密钥后用空格或制表符加代理，例如：\\nsk-xxxx socks5://127.0.0.1:1080",
     "openai_keys_import_success": "成功导入了 {{count}} 个 API 密钥",
     "openai_keys_import_empty": "未检测到有效的密钥",
+    "openai_keys_import_all_duplicates": "所有密钥都已存在，未添加新密钥",
+    "openai_keys_import_skipped": "已跳过 {{count}} 个重复密钥",
     "openai_keys_pagination_info": "第 {{current}} / {{total}} 页 · 共 {{count}} 个密钥",
     "openai_key_placeholder": "输入 sk- 开头的密钥",
     "openai_proxy_placeholder": "可选代理 URL (如 socks5://...)",

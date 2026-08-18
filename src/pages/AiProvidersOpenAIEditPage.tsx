@@ -148,33 +148,59 @@ export function AiProvidersOpenAIEditPage() {
 
   const handleImportKeys = () => {
     const lines = importText.split(/\r?\n/);
+    const currentList = form.apiKeyEntries;
+
+    // 去重集合：以「密钥 + 代理」组合为键，涵盖现有列表，同 key 配不同代理仍保留
+    const existingKeys = new Set<string>();
+    for (const entry of currentList) {
+      if (!entry.apiKey?.trim()) continue;
+      existingKeys.add(`${entry.apiKey.trim()}@${entry.proxyUrl?.trim() || ''}`);
+    }
+
     const newEntries: ApiKeyEntry[] = [];
+    let skipped = 0;
 
     lines.forEach((line) => {
       const trimmed = line.trim();
       if (!trimmed) return;
 
       const parts = trimmed.split(/[\s\t]+/);
-      const apiKey = parts[0];
-      const proxyUrl = parts.length > 1 ? parts[1] : '';
+      const apiKey = parts[0]?.trim() || '';
+      const proxyUrl = parts.length > 1 ? parts[1].trim() : '';
+      if (!apiKey) return;
 
-      if (apiKey) {
-        newEntries.push({
-          apiKey,
-          proxyUrl: proxyUrl || undefined,
-          headers: {},
-        });
+      const dedupeKey = `${apiKey}@${proxyUrl}`;
+      if (existingKeys.has(dedupeKey)) {
+        skipped += 1;
+        return;
       }
+
+      existingKeys.add(dedupeKey);
+      newEntries.push({
+        apiKey,
+        proxyUrl: proxyUrl || undefined,
+        headers: {},
+      });
     });
 
     if (newEntries.length === 0) {
-      showNotification(t('ai_providers.openai_keys_import_empty', '未检测到有效的密钥'), 'error');
+      if (lines.some((line) => line.trim())) {
+        showNotification(
+          t('ai_providers.openai_keys_import_all_duplicates', '所有密钥都已存在，未添加新密钥'),
+          'warning'
+        );
+      } else {
+        showNotification(t('ai_providers.openai_keys_import_empty', '未检测到有效的密钥'), 'error');
+      }
       return;
     }
 
-    const currentList = form.apiKeyEntries;
-    let nextList: ApiKeyEntry[] = [];
-    if (currentList.length === 1 && !currentList[0].apiKey.trim() && !currentList[0].proxyUrl?.trim()) {
+    let nextList: ApiKeyEntry[];
+    if (
+      currentList.length === 1 &&
+      !currentList[0].apiKey?.trim() &&
+      !currentList[0].proxyUrl?.trim()
+    ) {
       nextList = newEntries;
     } else {
       nextList = [...currentList, ...newEntries];
@@ -189,7 +215,14 @@ export function AiProvidersOpenAIEditPage() {
       t('ai_providers.openai_keys_import_success', '成功导入了 {{count}} 个 API 密钥', { count: newEntries.length }),
       'success'
     );
-    
+
+    if (skipped > 0) {
+      showNotification(
+        t('ai_providers.openai_keys_import_skipped', '已跳过 {{count}} 个重复密钥', { count: skipped }),
+        'warning'
+      );
+    }
+
     setImportModalOpen(false);
     setImportText('');
 

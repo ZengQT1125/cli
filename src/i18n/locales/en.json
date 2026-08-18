@@ -431,6 +431,8 @@
     "openai_keys_import_hint": "Please enter the keys to import, one per line. Optional: you can add a proxy URL separated by space or tab after the key, e.g.:\\nsk-xxxx socks5://127.0.0.1:1080",
     "openai_keys_import_success": "Successfully imported {{count}} API keys",
     "openai_keys_import_empty": "No valid keys detected",
+    "openai_keys_import_all_duplicates": "All keys already exist, no new keys added",
+    "openai_keys_import_skipped": "Skipped {{count}} duplicate keys",
     "openai_keys_pagination_info": "Page {{current}} / {{total}} · {{count}} keys",
     "openai_key_placeholder": "sk-... key",
     "openai_proxy_placeholder": "Optional proxy URL (e.g. socks5://...)",
