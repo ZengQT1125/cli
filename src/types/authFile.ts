@@ -25,6 +25,13 @@ export interface AuthFileRequestError {
   timestamp?: string;
 }
 
+export interface AuthFileCooldown {
+  model?: string;
+  status: string;
+  reason?: string;
+  next_retry_after: string;
+}
+
 export interface AuthFileItem {
   name: string;
   type?: AuthFileType | string;
@@ -36,6 +43,7 @@ export interface AuthFileItem {
   unavailable?: boolean;
   status?: string;
   statusMessage?: string;
+  cooldowns?: AuthFileCooldown[];
   last_request_error?: AuthFileRequestError;
   lastRefresh?: string | number;
   modified?: number;

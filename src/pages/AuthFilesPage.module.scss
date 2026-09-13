@@ -689,6 +689,7 @@
 
 // 单个认证文件卡片
 .fileCard {
+  position: relative;
   background-color: var(--bg-primary);
   border: 1px solid var(--border-color);
   border-radius: $radius-lg;
@@ -778,6 +779,26 @@
   color: var(--text-primary);
   word-break: break-all;
   line-height: 1.4;
+}
+
+.websocketsBadge {
+  position: absolute;
+  top: 0;
+  right: $spacing-md;
+  z-index: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transform: translateY(-50%);
+  padding: 3px 6px;
+  border: 1px solid color-mix(in srgb, var(--primary-color) 30%, transparent);
+  border-radius: 6px;
+  background-color: color-mix(in srgb, var(--primary-color) 12%, var(--bg-primary));
+  color: var(--primary-color);
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1;
+  letter-spacing: 0.04em;
 }
 
 .cardMeta {
@@ -1080,6 +1101,73 @@
   background-color: rgba($error-color, 0.1);
   color: var(--danger-color);
   font-size: 12px;
+}
+
+.authCooldownSummary {
+  display: flex;
+  flex-direction: column;
+  gap: $spacing-sm;
+  padding: $spacing-sm $spacing-md;
+  border: 1px solid var(--border-color);
+  border-radius: $radius-md;
+  background: var(--bg-secondary);
+  font-size: 12px;
+}
+
+.authCooldownSummaryRow,
+.authCooldownItemRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: $spacing-md;
+}
+
+.authCooldownSummaryLabel {
+  color: var(--text-secondary);
+  flex-shrink: 0;
+}
+
+.authCooldownStatus {
+  padding: 2px 8px;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  font-weight: 600;
+}
+
+.authCooldownStatusActive {
+  color: $warning-color;
+  border-color: rgba($warning-color, 0.35);
+  background: rgba($warning-color, 0.08);
+}
+
+.authCooldownActions {
+  display: flex;
+  align-items: center;
+  gap: $spacing-xs;
+}
+
+.authCooldownList {
+  display: flex;
+  flex-direction: column;
+  gap: $spacing-xs;
+}
+
+.authCooldownItem {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding-top: $spacing-xs;
+  border-top: 1px solid var(--border-color);
+}
+
+.authCooldownItemRow {
+  min-width: 0;
+
+  > :last-child {
+    min-width: 0;
+    overflow-wrap: anywhere;
+    text-align: right;
+  }
 }
 
 .prefixProxyJsonWrapper {

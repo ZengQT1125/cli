@@ -8,6 +8,7 @@ import { DisableModelModal } from './DisableModelModal';
 import {
   formatTimestamp,
   formatCompactTokenNumber,
+  formatRequestKeyDisplay,
   formatCacheTokenRatio,
   getRateClassName,
   getProviderDisplayParts,
@@ -79,18 +80,24 @@ export function ChannelStats({
 }: ChannelStatsProps) {
   const { t } = useTranslation();
   const [expandedChannel, setExpandedChannel] = useState<string | null>(null);
+  const [filterRequestKey, setFilterRequestKey] = useState('');
   const [filterChannel, setFilterChannel] = useState('');
   const [filterModel, setFilterModel] = useState('');
   const [filterStatus, setFilterStatus] = useState<'' | 'success' | 'failed'>('');
 
   const [timeRange, setTimeRange] = useState<TimeRange>(1);
   const [customRange, setCustomRange] = useState<DateRange | undefined>();
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(100);
+  const [total, setTotal] = useState(0);
+  const [totalPages, setTotalPages] = useState(0);
 
   const [channelStats, setChannelStats] = useState<ChannelStat[]>([]);
-  const [filters, setFilters] = useState<{ channels: ChannelFilterOption[]; models: string[] }>({
-    channels: [],
-    models: [],
-  });
+  const [filters, setFilters] = useState<{
+    requestKeys: string[];
+    channels: ChannelFilterOption[];
+    models: string[];
+  }>({ requestKeys: [], channels: [], models: [] });
   const [statsLoading, setStatsLoading] = useState(false);
 
   const {
@@ -105,6 +112,7 @@ export function ChannelStats({
   const handleTimeRangeChange = useCallback((range: TimeRange, custom?: DateRange) => {
     setTimeRange(range);
     setCustomRange(custom);
+    setPage(1);
   }, []);
 
   const formatChannelLabel = useCallback(
@@ -126,6 +134,8 @@ export function ChannelStats({
       (item.models || []).forEach((model) => {
         const cachedTokens = model.cached_tokens || 0;
         const cacheWriteTokens = model.cache_write_tokens || 0;
+        const fastCachedTokens = model.fast_cached_tokens || 0;
+        const fastCacheWriteTokens = model.fast_cache_write_tokens || 0;
         const totalInputTokens = normalizeMonitorInputTokens(
           model.input_tokens || 0,
           cachedTokens,
@@ -146,7 +156,17 @@ export function ChannelStats({
             totalInputTokens,
             outputTokens,
             cachedTokens,
-            cacheWriteTokens
+            cacheWriteTokens,
+            {
+              inputTokens: normalizeMonitorInputTokens(
+                model.fast_input_tokens || 0,
+                fastCachedTokens,
+                fastCacheWriteTokens
+              ),
+              outputTokens: model.fast_output_tokens || 0,
+              cachedTokens: fastCachedTokens,
+              cacheWriteTokens: fastCacheWriteTokens,
+            }
           ),
           successRate: model.success_rate || 0,
           recentRequests: (model.recent_requests || []).map((req) => ({
@@ -194,7 +214,9 @@ export function ChannelStats({
     setStatsLoading(true);
     try {
       const response = await monitorApi.getChannelStats({
-        limit: 10,
+        page,
+        page_size: pageSize,
+        api_key: filterRequestKey || undefined,
         source: filterChannel || undefined,
         status: filterStatus || undefined,
         model: filterModel || undefined,
@@ -203,9 +225,12 @@ export function ChannelStats({
       const rawItems = response.items || [];
       const mapped = applyMonitorChannelStatsModelFilter(rawItems, filterModel).map(mapChannelStat);
       setChannelStats(mapped);
+      setTotal(response.total);
+      setTotalPages(response.total_pages);
+      if (response.page !== page) setPage(response.page);
 
       // 后端可能返回数万条 source 候选。原生 select 渲染这些 option 会长时间阻塞主线程；
-      // 渠道统计只展示当前 Top 列表，因此筛选项也只保留当前可见渠道和已选渠道。
+      // 筛选项只保留当前页可见渠道和已选渠道。
       const sourceSet = new Set<string>(mapped.map((stat) => stat.source));
       if (filterChannel) sourceSet.add(filterChannel);
       const channels = Array.from(sourceSet)
@@ -219,9 +244,13 @@ export function ChannelStats({
           : rawItems.flatMap((stat) => (stat.models || []).map((model) => model.model))
       );
 
-      const nextFilters = { channels, models: Array.from(modelSet).sort() };
+      const requestKeys = Array.from(
+        new Set((response.filters?.apis || []).filter(Boolean))
+      ).sort();
+      const nextFilters = { requestKeys, channels, models: Array.from(modelSet).sort() };
       setFilters((prev) =>
         mergeMonitorFilterOptions(prev, nextFilters, {
+          requestKey: filterRequestKey,
           channel: filterChannel,
           model: filterModel,
           status: filterStatus,
@@ -230,11 +259,16 @@ export function ChannelStats({
     } catch (err) {
       console.error('渠道统计加载失败：', err);
       setChannelStats([]);
-      setFilters({ channels: [], models: [] });
+      setTotal(0);
+      setTotalPages(0);
+      setFilters({ requestKeys: [], channels: [], models: [] });
     } finally {
       setStatsLoading(false);
     }
   }, [
+    page,
+    pageSize,
+    filterRequestKey,
     filterChannel,
     filterStatus,
     filterModel,
@@ -265,6 +299,10 @@ export function ChannelStats({
 
   const toggleExpand = (source: string) => {
     setExpandedChannel(expandedChannel === source ? null : source);
+  };
+
+  const goToPage = (nextPage: number) => {
+    setPage(Math.max(1, Math.min(nextPage, totalPages)));
   };
 
   const handleDisableClick = (source: string, model: string, e: React.MouseEvent) => {
@@ -324,9 +362,29 @@ export function ChannelStats({
       >
         <div className={styles.logFilters}>
           <select
-            className={styles.logSelect}
+            className={`${styles.logSelect} ${styles.requestKeySelect}`}
+            aria-label={t('monitor.logs.header_request_key')}
+            value={filterRequestKey}
+            onChange={(e) => {
+              setFilterRequestKey(e.target.value);
+              setPage(1);
+            }}
+          >
+            <option value="">{t('monitor.channel.all_request_keys')}</option>
+            {filters.requestKeys.map((requestKey) => (
+              <option key={requestKey} value={requestKey}>
+                {formatRequestKeyDisplay(requestKey)}
+              </option>
+            ))}
+          </select>
+          <select
+            className={`${styles.logSelect} ${styles.channelSelect}`}
+            aria-label={t('monitor.channel.header_name')}
             value={filterChannel}
-            onChange={(e) => setFilterChannel(e.target.value)}
+            onChange={(e) => {
+              setFilterChannel(e.target.value);
+              setPage(1);
+            }}
           >
             <option value="">{t('monitor.channel.all_channels')}</option>
             {filters.channels.map((channel) => (
@@ -337,8 +395,12 @@ export function ChannelStats({
           </select>
           <select
             className={styles.logSelect}
+            aria-label={t('monitor.channel.model')}
             value={filterModel}
-            onChange={(e) => setFilterModel(e.target.value)}
+            onChange={(e) => {
+              setFilterModel(e.target.value);
+              setPage(1);
+            }}
           >
             <option value="">{t('monitor.channel.all_models')}</option>
             {filters.models.map((model) => (
@@ -348,9 +410,13 @@ export function ChannelStats({
             ))}
           </select>
           <select
-            className={styles.logSelect}
+            className={`${styles.logSelect} ${styles.statusSelect}`}
+            aria-label={t('monitor.logs.header_status')}
             value={filterStatus}
-            onChange={(e) => setFilterStatus(e.target.value as '' | 'success' | 'failed')}
+            onChange={(e) => {
+              setFilterStatus(e.target.value as '' | 'success' | 'failed');
+              setPage(1);
+            }}
           >
             <option value="">{t('monitor.channel.all_status')}</option>
             <option value="success">{t('monitor.channel.only_success')}</option>
@@ -542,6 +608,57 @@ export function ChannelStats({
             </table>
           )}
         </div>
+
+        {totalPages > 0 && (
+          <div className={styles.pagination}>
+            <button className={styles.pageBtn} onClick={() => goToPage(1)} disabled={page <= 1}>
+              {t('monitor.logs.first_page')}
+            </button>
+            <button
+              className={styles.pageBtn}
+              onClick={() => goToPage(page - 1)}
+              disabled={page <= 1}
+            >
+              {t('monitor.logs.prev_page')}
+            </button>
+            <span className={styles.pageBtn}>
+              {t('monitor.logs.page_info', { current: page, total: totalPages })}
+            </span>
+            <select
+              className={`${styles.logSelect} ${styles.pageSizeSelect}`}
+              aria-label={t('monitor.logs.page_size_label')}
+              value={pageSize}
+              onChange={(e) => {
+                setPageSize(Number(e.target.value));
+                setPage(1);
+              }}
+            >
+              <option value="20">{t('monitor.logs.page_size_20')}</option>
+              <option value="50">{t('monitor.logs.page_size_50')}</option>
+              <option value="100">{t('monitor.logs.page_size_100')}</option>
+            </select>
+            <button
+              className={styles.pageBtn}
+              onClick={() => goToPage(page + 1)}
+              disabled={page >= totalPages}
+            >
+              {t('monitor.logs.next_page')}
+            </button>
+            <button
+              className={styles.pageBtn}
+              onClick={() => goToPage(totalPages)}
+              disabled={page >= totalPages}
+            >
+              {t('monitor.logs.last_page')}
+            </button>
+          </div>
+        )}
+
+        {channelStats.length > 0 && (
+          <div className={styles.paginationTotal} role="status" aria-live="polite">
+            {t('monitor.logs.total_count', { count: total })}
+          </div>
+        )}
       </Card>
 
       <DisableModelModal

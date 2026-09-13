@@ -38,11 +38,17 @@ import {
   apiCallApi,
   authFilesApi,
   getApiCallErrorMessage,
+  parseAntigravitySubscriptionSummary,
+  type ApiCallBatchRequest,
+  type ApiCallBatchResult,
+  type ApiCallRequest,
+  type ApiCallResult,
   type AntigravitySubscriptionSummary,
 } from '@/services/api';
 import { useQuotaStore } from '@/stores';
 import {
   ANTIGRAVITY_QUOTA_URLS,
+  ANTIGRAVITY_CODE_ASSIST_URL,
   ANTIGRAVITY_REQUEST_HEADERS,
   CLAUDE_PROFILE_URL,
   CLAUDE_USAGE_URL,
@@ -127,6 +133,18 @@ type CodexQuotaData = {
   windows: CodexQuotaWindow[];
 };
 
+type GeminiCliSupplementaryData = {
+  tierLabel: string | null;
+  tierId: string | null;
+  creditBalance: number | null;
+};
+
+type GeminiCliQuotaData = GeminiCliSupplementaryData & {
+  fileName: string;
+  supplementaryRequestId: number;
+  buckets: GeminiCliQuotaBucketState[];
+};
+
 const QUOTA_PROGRESS_HIGH_THRESHOLD = 70;
 const QUOTA_PROGRESS_MEDIUM_THRESHOLD = 30;
 const CODEX_RESET_CREDITS_REQUEST_TIMEOUT_MS = 8000;
@@ -164,6 +182,7 @@ export interface QuotaConfig<TState, TData> {
   cardIdleMessageKey?: string;
   filterFn: (file: AuthFileItem) => boolean;
   fetchQuota: (file: AuthFileItem, t: TFunction) => Promise<TData>;
+  fetchQuotaBatch: (files: AuthFileItem[], t: TFunction) => Promise<QuotaBatchFetchResult<TData>[]>;
   resetQuota?: (file: AuthFileItem, t: TFunction) => Promise<TData>;
   canResetQuota?: (quota: TState) => boolean;
   storeSelector: (state: QuotaStore) => Record<string, TState>;
@@ -178,7 +197,90 @@ export interface QuotaConfig<TState, TData> {
   renderQuotaItems: (quota: TState, t: TFunction, helpers: QuotaRenderHelpers) => ReactNode;
 }
 
-const resolveAntigravityProjectId = async (file: AuthFileItem): Promise<string> => {
+export type QuotaBatchFetchResult<TData> =
+  | { name: string; status: 'success'; data: TData }
+  | { name: string; status: 'error'; error: unknown };
+
+type QuotaBatchPlan<TData> = {
+  requests: Array<{ key: string; request: ApiCallRequest }>;
+  resolve: (results: Map<string, ApiCallBatchResult>) => TData;
+};
+
+const batchItemError = (result: Extract<ApiCallBatchResult, { status: 'error' }>): Error =>
+  createStatusError(result.error.message, result.error.status || undefined);
+
+const requireBatchValue = (
+  results: Map<string, ApiCallBatchResult>,
+  key: string
+): ApiCallResult => {
+  const result = results.get(key);
+  if (!result) throw new Error(`Missing batch result: ${key}`);
+  if (result.status === 'error') throw batchItemError(result);
+  return result.value;
+};
+
+const executeQuotaBatch = async <TData>(
+  files: AuthFileItem[],
+  buildPlan: (
+    file: AuthFileItem,
+    t: TFunction
+  ) => Promise<QuotaBatchPlan<TData>> | QuotaBatchPlan<TData>,
+  t: TFunction
+): Promise<QuotaBatchFetchResult<TData>[]> => {
+  const prepared = await Promise.all(
+    files.map(async (file, fileIndex) => {
+      try {
+        const plan = await buildPlan(file, t);
+        const keys = new Set<string>();
+        const requests: ApiCallBatchRequest[] = plan.requests.map(({ key, request }) => {
+          if (!key || keys.has(key)) throw new Error('Invalid quota batch plan');
+          keys.add(key);
+          return { id: `${fileIndex}:${key}`, ...request };
+        });
+        if (requests.length === 0) throw new Error('Invalid quota batch plan');
+        return { status: 'ready' as const, file, fileIndex, plan, requests };
+      } catch (error: unknown) {
+        return { status: 'error' as const, file, fileIndex, error };
+      }
+    })
+  );
+
+  const requests: ApiCallBatchRequest[] = prepared.flatMap((item) =>
+    item.status === 'ready' ? item.requests : []
+  );
+  let batchResults: ApiCallBatchResult[] = [];
+  let batchError: unknown;
+  if (requests.length > 0) {
+    try {
+      batchResults = await apiCallApi.batch(requests);
+    } catch (error: unknown) {
+      batchError = error;
+    }
+  }
+
+  const resultById = new Map(batchResults.map((result) => [result.id, result]));
+  return prepared.map((item): QuotaBatchFetchResult<TData> => {
+    if (item.status === 'error') {
+      return { name: item.file.name, status: 'error', error: item.error };
+    }
+    if (batchError) {
+      return { name: item.file.name, status: 'error', error: batchError };
+    }
+
+    const localResults = new Map<string, ApiCallBatchResult>();
+    for (const { key } of item.plan.requests) {
+      const result = resultById.get(`${item.fileIndex}:${key}`);
+      if (result) localResults.set(key, result);
+    }
+    try {
+      return { name: item.file.name, status: 'success', data: item.plan.resolve(localResults) };
+    } catch (error: unknown) {
+      return { name: item.file.name, status: 'error', error };
+    }
+  });
+};
+
+const readAntigravityProjectId = (file: AuthFileItem): string => {
   const directProjectId = normalizeStringValue(file.project_id ?? file.projectId);
   if (directProjectId) return directProjectId;
 
@@ -201,6 +303,13 @@ const resolveAntigravityProjectId = async (file: AuthFileItem): Promise<string> 
       )
     : null;
   if (attributesProjectId) return attributesProjectId;
+
+  return '';
+};
+
+const resolveAntigravityProjectId = async (file: AuthFileItem): Promise<string> => {
+  const listedProjectId = readAntigravityProjectId(file);
+  if (listedProjectId) return listedProjectId;
 
   try {
     const text = await authFilesApi.downloadText(file.name);
@@ -344,6 +453,112 @@ const fetchAntigravityQuota = async (
 
   throw createStatusError(lastError || t('common.unknown_error'), priorityStatus ?? lastStatus);
 };
+
+const fetchAntigravityQuotaBatch = (files: AuthFileItem[], t: TFunction) =>
+  executeQuotaBatch(
+    files,
+    (file, translate) => {
+      const authIndex = normalizeAuthIndex(file['auth_index'] ?? file.authIndex);
+      if (!authIndex) throw new Error(translate('antigravity_quota.missing_auth_index'));
+      const projectId = readAntigravityProjectId(file);
+      if (!projectId) throw new Error(translate('antigravity_quota.missing_project_id'));
+      const requestBody = JSON.stringify({ project: projectId });
+
+      return {
+        requests: [
+          {
+            key: 'subscription',
+            request: {
+              authIndex,
+              method: 'POST',
+              url: ANTIGRAVITY_CODE_ASSIST_URL,
+              header: { ...ANTIGRAVITY_REQUEST_HEADERS },
+              data: JSON.stringify({ metadata: { ideType: 'ANTIGRAVITY' } }),
+            },
+          },
+          ...ANTIGRAVITY_QUOTA_URLS.map((url, index) => ({
+            key: `quota-${index}`,
+            request: {
+              authIndex,
+              method: 'POST',
+              url,
+              header: { ...ANTIGRAVITY_REQUEST_HEADERS },
+              data: requestBody,
+            },
+          })),
+        ],
+        resolve: (results): AntigravityQuotaData => {
+          const subscriptionResult = results.get('subscription');
+          const subscription =
+            subscriptionResult?.status === 'success' &&
+            subscriptionResult.value.statusCode >= 200 &&
+            subscriptionResult.value.statusCode < 300
+              ? toAntigravityQuotaSubscription(
+                  parseAntigravitySubscriptionSummary(
+                    subscriptionResult.value.body ?? subscriptionResult.value.bodyText
+                  )
+                )
+              : null;
+          let lastError = '';
+          let lastStatus: number | undefined;
+          let priorityStatus: number | undefined;
+          let hadSuccess = false;
+
+          for (let index = 0; index < ANTIGRAVITY_QUOTA_URLS.length; index += 1) {
+            const quotaResult = results.get(`quota-${index}`);
+            if (!quotaResult) {
+              lastError = translate('common.unknown_error');
+              continue;
+            }
+            if (quotaResult.status === 'error') {
+              lastError = quotaResult.error.message;
+              lastStatus = quotaResult.error.status || undefined;
+              if (lastStatus === 403 || lastStatus === 404) priorityStatus ??= lastStatus;
+              continue;
+            }
+
+            const result = quotaResult.value;
+            if (result.statusCode < 200 || result.statusCode >= 300) {
+              lastError = getApiCallErrorMessage(result);
+              lastStatus = result.statusCode;
+              if (result.statusCode === 403 || result.statusCode === 404) {
+                priorityStatus ??= result.statusCode;
+              }
+              continue;
+            }
+
+            hadSuccess = true;
+            const payload = parseAntigravityPayload(
+              result.body ?? result.bodyText
+            ) as AntigravityQuotaSummaryPayload | null;
+            if (!payload || !Array.isArray(payload.groups)) {
+              lastError = translate('antigravity_quota.empty_models');
+              continue;
+            }
+            const groups = buildAntigravityQuotaGroups(payload);
+            if (groups.length === 0) {
+              lastError = translate('antigravity_quota.empty_models');
+              continue;
+            }
+            return {
+              groups,
+              subscription,
+              serverTimeOffsetMs: resolveResponseServerTimeOffsetMs(result.header),
+            };
+          }
+
+          if (hadSuccess) {
+            return { groups: [], subscription, serverTimeOffsetMs: null };
+          }
+          throw createStatusError(
+            lastError || translate('common.unknown_error'),
+            priorityStatus ?? lastStatus
+          );
+        },
+      };
+    },
+    t
+  );
 
 const buildCodexQuotaWindows = (payload: CodexUsagePayload, t: TFunction): CodexQuotaWindow[] => {
   const FIVE_HOUR_SECONDS = 18000;
@@ -570,6 +785,59 @@ const buildCodexRequestHeader = (file: AuthFileItem): Record<string, string> => 
   return requestHeader;
 };
 
+const buildCodexResetCreditsHeader = (
+  requestHeader: Record<string, string>
+): Record<string, string> => ({
+  ...requestHeader,
+  Accept: 'application/json',
+  'OpenAI-Beta': 'codex-1',
+  Originator: 'Codex Desktop',
+});
+
+const parseCodexResetCreditsResult = (
+  result: ApiCallResult,
+  t: TFunction
+): CodexResetCreditsData => {
+  if (result.statusCode < 200 || result.statusCode >= 300) {
+    return {
+      availableCount: null,
+      credits: [],
+      error: getApiCallErrorMessage(result),
+    };
+  }
+
+  const summary = normalizeCodexResetCreditsPayload(result.body ?? result.bodyText);
+  if (summary.invalidPayload) {
+    return {
+      availableCount: null,
+      credits: [],
+      error: t('codex_quota.reset_credits_invalid_payload'),
+    };
+  }
+
+  return {
+    availableCount: summary.availableCount,
+    credits: summary.credits,
+    error: '',
+  };
+};
+
+const failedCodexResetCredits = (error: unknown, t: TFunction): CodexResetCreditsData => ({
+  availableCount: null,
+  credits: [],
+  error: error instanceof Error ? error.message : t('common.unknown_error'),
+});
+
+const parseCodexUsageResult = (result: ApiCallResult, t: TFunction): CodexUsagePayload => {
+  if (result.statusCode < 200 || result.statusCode >= 300) {
+    throw createStatusError(getApiCallErrorMessage(result), result.statusCode);
+  }
+
+  const payload = parseCodexUsagePayload(result.body ?? result.bodyText);
+  if (!payload) throw new Error(t('codex_quota.empty_windows'));
+  return payload;
+};
+
 const fetchCodexResetCredits = async (
   authIndex: string,
   requestHeader: Record<string, string>,
@@ -581,45 +849,43 @@ const fetchCodexResetCredits = async (
         authIndex,
         method: 'GET',
         url: CODEX_RATE_LIMIT_RESET_CREDITS_URL,
-        header: {
-          ...requestHeader,
-          Accept: 'application/json',
-          'OpenAI-Beta': 'codex-1',
-          Originator: 'Codex Desktop',
-        },
+        header: buildCodexResetCreditsHeader(requestHeader),
       },
       { timeout: CODEX_RESET_CREDITS_REQUEST_TIMEOUT_MS }
     );
 
-    if (result.statusCode < 200 || result.statusCode >= 300) {
-      return {
-        availableCount: null,
-        credits: [],
-        error: getApiCallErrorMessage(result),
-      };
-    }
-
-    const summary = normalizeCodexResetCreditsPayload(result.body ?? result.bodyText);
-    if (summary.invalidPayload) {
-      return {
-        availableCount: null,
-        credits: [],
-        error: t('codex_quota.reset_credits_invalid_payload'),
-      };
-    }
-
-    return {
-      availableCount: summary.availableCount,
-      credits: summary.credits,
-      error: '',
-    };
+    return parseCodexResetCreditsResult(result, t);
   } catch (err: unknown) {
-    return {
-      availableCount: null,
-      credits: [],
-      error: err instanceof Error ? err.message : t('common.unknown_error'),
-    };
+    return failedCodexResetCredits(err, t);
   }
+};
+
+const parseCodexQuotaResult = (
+  file: AuthFileItem,
+  payload: CodexUsagePayload,
+  resetCreditsData: CodexResetCreditsData,
+  t: TFunction
+): CodexQuotaData => {
+  const planTypeFromUsage = normalizePlanType(payload.plan_type ?? payload.planType);
+  const resetCredits = payload.rate_limit_reset_credits ?? payload.rateLimitResetCredits ?? null;
+  const usageResetCreditsAvailableCount = normalizeNumberValue(
+    resetCredits?.available_count ?? resetCredits?.availableCount
+  );
+  const resetCreditsCountFromDetails =
+    resetCreditsData.credits.length > 0 ? resetCreditsData.credits.length : null;
+  const rateLimitResetCreditsAvailableCount =
+    resetCreditsData.availableCount ??
+    resetCreditsCountFromDetails ??
+    usageResetCreditsAvailableCount;
+
+  return {
+    planType: planTypeFromUsage ?? resolveCodexPlanType(file),
+    subscriptionActiveUntil: resolveCodexSubscriptionActiveUntil(file),
+    rateLimitResetCreditsAvailableCount,
+    rateLimitResetCredits: resetCreditsData.credits,
+    rateLimitResetCreditsError: resetCreditsData.error,
+    windows: buildCodexQuotaWindows(payload, t),
+  };
 };
 
 const fetchCodexQuota = async (file: AuthFileItem, t: TFunction): Promise<CodexQuotaData> => {
@@ -629,8 +895,6 @@ const fetchCodexQuota = async (file: AuthFileItem, t: TFunction): Promise<CodexQ
     throw new Error(t('codex_quota.missing_auth_index'));
   }
 
-  const planTypeFromFile = resolveCodexPlanType(file);
-  const subscriptionActiveUntil = resolveCodexSubscriptionActiveUntil(file);
   const requestHeader = buildCodexRequestHeader(file);
 
   const result = await apiCallApi.request({
@@ -640,38 +904,59 @@ const fetchCodexQuota = async (file: AuthFileItem, t: TFunction): Promise<CodexQ
     header: requestHeader,
   });
 
-  if (result.statusCode < 200 || result.statusCode >= 300) {
-    throw createStatusError(getApiCallErrorMessage(result), result.statusCode);
-  }
-
-  const payload = parseCodexUsagePayload(result.body ?? result.bodyText);
-  if (!payload) {
-    throw new Error(t('codex_quota.empty_windows'));
-  }
-
-  const planTypeFromUsage = normalizePlanType(payload.plan_type ?? payload.planType);
-  const resetCredits = payload.rate_limit_reset_credits ?? payload.rateLimitResetCredits ?? null;
-  const usageResetCreditsAvailableCount = normalizeNumberValue(
-    resetCredits?.available_count ?? resetCredits?.availableCount
-  );
+  const payload = parseCodexUsageResult(result, t);
   const resetCreditsData = await fetchCodexResetCredits(authIndex, requestHeader, t);
-  const resetCreditsCountFromDetails =
-    resetCreditsData.credits.length > 0 ? resetCreditsData.credits.length : null;
-  const rateLimitResetCreditsAvailableCount =
-    resetCreditsData.availableCount ??
-    resetCreditsCountFromDetails ??
-    usageResetCreditsAvailableCount;
-  const planType = planTypeFromUsage ?? planTypeFromFile;
-  const windows = buildCodexQuotaWindows(payload, t);
-  return {
-    planType,
-    subscriptionActiveUntil,
-    rateLimitResetCreditsAvailableCount,
-    rateLimitResetCredits: resetCreditsData.credits,
-    rateLimitResetCreditsError: resetCreditsData.error,
-    windows,
-  };
+  return parseCodexQuotaResult(file, payload, resetCreditsData, t);
 };
+
+const fetchCodexQuotaBatch = (files: AuthFileItem[], t: TFunction) =>
+  executeQuotaBatch(
+    files,
+    (file, translate) => {
+      const authIndex = normalizeAuthIndex(file['auth_index'] ?? file.authIndex);
+      if (!authIndex) throw new Error(translate('codex_quota.missing_auth_index'));
+      const requestHeader = buildCodexRequestHeader(file);
+      return {
+        requests: [
+          {
+            key: 'usage',
+            request: {
+              authIndex,
+              method: 'GET',
+              url: CODEX_USAGE_URL,
+              header: requestHeader,
+            },
+          },
+          {
+            key: 'reset-credits',
+            request: {
+              authIndex,
+              method: 'GET',
+              url: CODEX_RATE_LIMIT_RESET_CREDITS_URL,
+              header: buildCodexResetCreditsHeader(requestHeader),
+            },
+          },
+        ],
+        resolve: (results) => {
+          const resetResult = results.get('reset-credits');
+          const resetCreditsData =
+            resetResult?.status === 'success'
+              ? parseCodexResetCreditsResult(resetResult.value, translate)
+              : failedCodexResetCredits(
+                  resetResult?.status === 'error' ? batchItemError(resetResult) : undefined,
+                  translate
+                );
+          return parseCodexQuotaResult(
+            file,
+            parseCodexUsageResult(requireBatchValue(results, 'usage'), translate),
+            resetCreditsData,
+            translate
+          );
+        },
+      };
+    },
+    t
+  );
 
 const createCodexRedeemRequestId = (): string => {
   if (typeof globalThis.crypto?.randomUUID === 'function') {
@@ -775,40 +1060,55 @@ const resolveGeminiCliCreditBalance = (
   return found ? total : null;
 };
 
+const emptyGeminiCliSupplementaryData = (): GeminiCliSupplementaryData => ({
+  tierLabel: null,
+  tierId: null,
+  creditBalance: null,
+});
+
+const parseGeminiCliSupplementaryResult = (
+  result: ApiCallResult,
+  t: TFunction
+): GeminiCliSupplementaryData => {
+  if (result.statusCode < 200 || result.statusCode >= 300) {
+    return emptyGeminiCliSupplementaryData();
+  }
+
+  const payload = parseGeminiCliCodeAssistPayload(result.body ?? result.bodyText);
+  return {
+    tierLabel: resolveGeminiCliTierLabel(payload, t),
+    tierId: resolveGeminiCliTierId(payload),
+    creditBalance: resolveGeminiCliCreditBalance(payload),
+  };
+};
+
+const buildGeminiCliCodeAssistRequest = (authIndex: string, projectId: string): ApiCallRequest => ({
+  authIndex,
+  method: 'POST',
+  url: GEMINI_CLI_CODE_ASSIST_URL,
+  header: { ...GEMINI_CLI_REQUEST_HEADERS },
+  data: JSON.stringify({
+    cloudaicompanionProject: projectId,
+    metadata: {
+      ideType: 'IDE_UNSPECIFIED',
+      platform: 'PLATFORM_UNSPECIFIED',
+      pluginType: 'GEMINI',
+      duetProject: projectId,
+    },
+  }),
+});
+
 const fetchGeminiCliCodeAssist = async (
   authIndex: string,
   projectId: string,
   t: TFunction
-): Promise<{ tierLabel: string | null; tierId: string | null; creditBalance: number | null }> => {
+): Promise<GeminiCliSupplementaryData> => {
   try {
-    const result = await apiCallApi.request({
-      authIndex,
-      method: 'POST',
-      url: GEMINI_CLI_CODE_ASSIST_URL,
-      header: { ...GEMINI_CLI_REQUEST_HEADERS },
-      data: JSON.stringify({
-        cloudaicompanionProject: projectId,
-        metadata: {
-          ideType: 'IDE_UNSPECIFIED',
-          platform: 'PLATFORM_UNSPECIFIED',
-          pluginType: 'GEMINI',
-          duetProject: projectId,
-        },
-      }),
-    });
+    const result = await apiCallApi.request(buildGeminiCliCodeAssistRequest(authIndex, projectId));
 
-    if (result.statusCode < 200 || result.statusCode >= 300) {
-      return { tierLabel: null, tierId: null, creditBalance: null };
-    }
-
-    const payload = parseGeminiCliCodeAssistPayload(result.body ?? result.bodyText);
-    return {
-      tierLabel: resolveGeminiCliTierLabel(payload, t),
-      tierId: resolveGeminiCliTierId(payload),
-      creditBalance: resolveGeminiCliCreditBalance(payload),
-    };
+    return parseGeminiCliSupplementaryResult(result, t);
   } catch {
-    return { tierLabel: null, tierId: null, creditBalance: null };
+    return emptyGeminiCliSupplementaryData();
   }
 };
 
@@ -875,42 +1175,13 @@ const scheduleGeminiCliSupplementaryRefresh = (
   return requestId;
 };
 
-const fetchGeminiCliQuota = async (
-  file: AuthFileItem,
-  t: TFunction
-): Promise<{
-  fileName: string;
-  supplementaryRequestId: number;
-  buckets: GeminiCliQuotaBucketState[];
-  tierLabel: string | null;
-  tierId: string | null;
-  creditBalance: number | null;
-}> => {
-  const rawAuthIndex = file['auth_index'] ?? file.authIndex;
-  const authIndex = normalizeAuthIndex(rawAuthIndex);
-  if (!authIndex) {
-    throw new Error(t('gemini_cli_quota.missing_auth_index'));
-  }
-
-  const projectId = resolveGeminiCliProjectId(file);
-  if (!projectId) {
-    throw new Error(t('gemini_cli_quota.missing_project_id'));
-  }
-
-  const quotaResponse = await apiCallApi.request({
-    authIndex,
-    method: 'POST',
-    url: GEMINI_CLI_QUOTA_URL,
-    header: { ...GEMINI_CLI_REQUEST_HEADERS },
-    data: JSON.stringify({ project: projectId }),
-  });
+const parseGeminiCliQuotaBuckets = (quotaResponse: ApiCallResult): GeminiCliQuotaBucketState[] => {
   if (quotaResponse.statusCode < 200 || quotaResponse.statusCode >= 300) {
     throw createStatusError(getApiCallErrorMessage(quotaResponse), quotaResponse.statusCode);
   }
 
   const payload = parseGeminiCliQuotaPayload(quotaResponse.body ?? quotaResponse.bodyText);
-  const buckets = Array.isArray(payload?.buckets) ? payload?.buckets : [];
-
+  const buckets = Array.isArray(payload?.buckets) ? payload.buckets : [];
   const parsedBuckets = buckets
     .map((bucket) => {
       const modelId = normalizeGeminiCliModelId(bucket.modelId ?? bucket.model_id);
@@ -929,18 +1200,42 @@ const fetchGeminiCliQuota = async (
       } else if (resetTime) {
         fallbackFraction = 0;
       }
-      const remainingFraction = remainingFractionRaw ?? fallbackFraction;
       return {
         modelId,
         tokenType,
-        remainingFraction,
+        remainingFraction: remainingFractionRaw ?? fallbackFraction,
         remainingAmount,
         resetTime,
       };
     })
     .filter((bucket): bucket is GeminiCliParsedBucket => bucket !== null);
 
-  const builtBuckets = buildGeminiCliQuotaBuckets(parsedBuckets);
+  return buildGeminiCliQuotaBuckets(parsedBuckets);
+};
+
+const fetchGeminiCliQuota = async (
+  file: AuthFileItem,
+  t: TFunction
+): Promise<GeminiCliQuotaData> => {
+  const rawAuthIndex = file['auth_index'] ?? file.authIndex;
+  const authIndex = normalizeAuthIndex(rawAuthIndex);
+  if (!authIndex) {
+    throw new Error(t('gemini_cli_quota.missing_auth_index'));
+  }
+
+  const projectId = resolveGeminiCliProjectId(file);
+  if (!projectId) {
+    throw new Error(t('gemini_cli_quota.missing_project_id'));
+  }
+
+  const quotaResponse = await apiCallApi.request({
+    authIndex,
+    method: 'POST',
+    url: GEMINI_CLI_QUOTA_URL,
+    header: { ...GEMINI_CLI_REQUEST_HEADERS },
+    data: JSON.stringify({ project: projectId }),
+  });
+  const builtBuckets = parseGeminiCliQuotaBuckets(quotaResponse);
   const supplementaryRequestId = scheduleGeminiCliSupplementaryRefresh(
     file.name,
     authIndex,
@@ -961,6 +1256,49 @@ const fetchGeminiCliQuota = async (
     creditBalance: supplementarySnapshot.creditBalance,
   };
 };
+
+const fetchGeminiCliQuotaBatch = (files: AuthFileItem[], t: TFunction) =>
+  executeQuotaBatch(
+    files,
+    (file, translate) => {
+      const authIndex = normalizeAuthIndex(file['auth_index'] ?? file.authIndex);
+      if (!authIndex) throw new Error(translate('gemini_cli_quota.missing_auth_index'));
+      const projectId = resolveGeminiCliProjectId(file);
+      if (!projectId) throw new Error(translate('gemini_cli_quota.missing_project_id'));
+      return {
+        requests: [
+          {
+            key: 'quota',
+            request: {
+              authIndex,
+              method: 'POST',
+              url: GEMINI_CLI_QUOTA_URL,
+              header: { ...GEMINI_CLI_REQUEST_HEADERS },
+              data: JSON.stringify({ project: projectId }),
+            },
+          },
+          {
+            key: 'supplementary',
+            request: buildGeminiCliCodeAssistRequest(authIndex, projectId),
+          },
+        ],
+        resolve: (results): GeminiCliQuotaData => {
+          const supplementary = results.get('supplementary');
+          const supplementaryData =
+            supplementary?.status === 'success'
+              ? parseGeminiCliSupplementaryResult(supplementary.value, translate)
+              : emptyGeminiCliSupplementaryData();
+          return {
+            fileName: file.name,
+            supplementaryRequestId: 0,
+            buckets: parseGeminiCliQuotaBuckets(requireBatchValue(results, 'quota')),
+            ...supplementaryData,
+          };
+        },
+      };
+    },
+    t
+  );
 
 const ANTIGRAVITY_PREMIUM_PLANS = new Set(['ultra', 'ultra-lite']);
 
@@ -1522,6 +1860,35 @@ const resolveClaudePlanType = (profile: ClaudeProfileResponse | null): string | 
   return null;
 };
 
+const parseClaudeQuotaResults = (
+  usageResult: ApiCallResult,
+  profileResult: ApiCallResult | null,
+  t: TFunction
+): {
+  windows: ClaudeQuotaWindow[];
+  extraUsage?: ClaudeExtraUsage | null;
+  planType?: string | null;
+} => {
+  if (usageResult.statusCode < 200 || usageResult.statusCode >= 300) {
+    throw createStatusError(getApiCallErrorMessage(usageResult), usageResult.statusCode);
+  }
+
+  const payload = parseClaudeUsagePayload(usageResult.body ?? usageResult.bodyText);
+  if (!payload) {
+    throw new Error(t('claude_quota.empty_windows'));
+  }
+
+  const windows = buildClaudeQuotaWindows(payload, t);
+  const planType =
+    profileResult && profileResult.statusCode >= 200 && profileResult.statusCode < 300
+      ? resolveClaudePlanType(
+          parseClaudeProfilePayload(profileResult.body ?? profileResult.bodyText)
+        )
+      : null;
+
+  return { windows, extraUsage: payload.extra_usage, planType };
+};
+
 const fetchClaudeQuota = async (
   file: AuthFileItem,
   t: TFunction
@@ -1555,29 +1922,52 @@ const fetchClaudeQuota = async (
     throw usageResult.reason;
   }
 
-  const result = usageResult.value;
-
-  if (result.statusCode < 200 || result.statusCode >= 300) {
-    throw createStatusError(getApiCallErrorMessage(result), result.statusCode);
-  }
-
-  const payload = parseClaudeUsagePayload(result.body ?? result.bodyText);
-  if (!payload) {
-    throw new Error(t('claude_quota.empty_windows'));
-  }
-
-  const windows = buildClaudeQuotaWindows(payload, t);
-  const planType =
-    profileResult.status === 'fulfilled' &&
-    profileResult.value.statusCode >= 200 &&
-    profileResult.value.statusCode < 300
-      ? resolveClaudePlanType(
-          parseClaudeProfilePayload(profileResult.value.body ?? profileResult.value.bodyText)
-        )
-      : null;
-
-  return { windows, extraUsage: payload.extra_usage, planType };
+  return parseClaudeQuotaResults(
+    usageResult.value,
+    profileResult.status === 'fulfilled' ? profileResult.value : null,
+    t
+  );
 };
+
+const fetchClaudeQuotaBatch = (files: AuthFileItem[], t: TFunction) =>
+  executeQuotaBatch(
+    files,
+    (file, translate) => {
+      const authIndex = normalizeAuthIndex(file['auth_index'] ?? file.authIndex);
+      if (!authIndex) throw new Error(translate('claude_quota.missing_auth_index'));
+      return {
+        requests: [
+          {
+            key: 'usage',
+            request: {
+              authIndex,
+              method: 'GET',
+              url: CLAUDE_USAGE_URL,
+              header: { ...CLAUDE_REQUEST_HEADERS },
+            },
+          },
+          {
+            key: 'profile',
+            request: {
+              authIndex,
+              method: 'GET',
+              url: CLAUDE_PROFILE_URL,
+              header: { ...CLAUDE_REQUEST_HEADERS },
+            },
+          },
+        ],
+        resolve: (results) => {
+          const profile = results.get('profile');
+          return parseClaudeQuotaResults(
+            requireBatchValue(results, 'usage'),
+            profile?.status === 'success' ? profile.value : null,
+            translate
+          );
+        },
+      };
+    },
+    t
+  );
 
 const renderClaudeItems = (
   quota: ClaudeQuotaState,
@@ -1664,6 +2054,7 @@ export const CLAUDE_CONFIG: QuotaConfig<
   cardIdleMessageKey: 'quota_management.card_idle_hint',
   filterFn: (file) => isClaudeFile(file) && !isDisabledAuthFile(file),
   fetchQuota: fetchClaudeQuota,
+  fetchQuotaBatch: fetchClaudeQuotaBatch,
   storeSelector: (state) => state.claudeQuota,
   storeSetter: 'setClaudeQuota',
   buildLoadingState: () => ({ status: 'loading', windows: [] }),
@@ -1692,6 +2083,7 @@ export const ANTIGRAVITY_CONFIG: QuotaConfig<AntigravityQuotaState, AntigravityQ
   cardIdleMessageKey: 'quota_management.card_idle_hint',
   filterFn: (file) => isAntigravityFile(file) && !isDisabledAuthFile(file),
   fetchQuota: fetchAntigravityQuota,
+  fetchQuotaBatch: fetchAntigravityQuotaBatch,
   storeSelector: (state) => state.antigravityQuota,
   storeSetter: 'setAntigravityQuota',
   buildLoadingState: () => ({
@@ -1727,6 +2119,7 @@ export const CODEX_CONFIG: QuotaConfig<CodexQuotaState, CodexQuotaData> = {
   cardIdleMessageKey: 'quota_management.card_idle_hint',
   filterFn: (file) => isCodexFile(file) && !isDisabledAuthFile(file),
   fetchQuota: fetchCodexQuota,
+  fetchQuotaBatch: fetchCodexQuotaBatch,
   resetQuota: resetCodexQuota,
   canResetQuota: (quota) => (quota.rateLimitResetCreditsAvailableCount ?? 0) > 0,
   storeSelector: (state) => state.codexQuota,
@@ -1761,23 +2154,14 @@ export const CODEX_CONFIG: QuotaConfig<CodexQuotaState, CodexQuotaData> = {
   renderQuotaItems: renderCodexItems,
 };
 
-export const GEMINI_CLI_CONFIG: QuotaConfig<
-  GeminiCliQuotaState,
-  {
-    fileName: string;
-    supplementaryRequestId: number;
-    buckets: GeminiCliQuotaBucketState[];
-    tierLabel: string | null;
-    tierId: string | null;
-    creditBalance: number | null;
-  }
-> = {
+export const GEMINI_CLI_CONFIG: QuotaConfig<GeminiCliQuotaState, GeminiCliQuotaData> = {
   type: 'gemini-cli',
   i18nPrefix: 'gemini_cli_quota',
   cardIdleMessageKey: 'quota_management.card_idle_hint',
   filterFn: (file) =>
     isGeminiCliFile(file) && !isRuntimeOnlyAuthFile(file) && !isDisabledAuthFile(file),
   fetchQuota: fetchGeminiCliQuota,
+  fetchQuotaBatch: fetchGeminiCliQuotaBatch,
   storeSelector: (state) => state.geminiCliQuota,
   storeSetter: 'setGeminiCliQuota',
   buildLoadingState: () => ({
@@ -1816,6 +2200,19 @@ export const GEMINI_CLI_CONFIG: QuotaConfig<
 
 // Kimi quota functions
 
+const parseKimiQuotaResult = (result: ApiCallResult, t: TFunction): KimiQuotaRow[] => {
+  if (result.statusCode < 200 || result.statusCode >= 300) {
+    throw createStatusError(getApiCallErrorMessage(result), result.statusCode);
+  }
+
+  const payload = parseKimiUsagePayload(result.body ?? result.bodyText);
+  if (!payload) {
+    throw new Error(t('kimi_quota.empty_data'));
+  }
+
+  return buildKimiQuotaRows(payload);
+};
+
 const fetchKimiQuota = async (file: AuthFileItem, t: TFunction): Promise<KimiQuotaRow[]> => {
   const rawAuthIndex = file['auth_index'] ?? file.authIndex;
   const authIndex = normalizeAuthIndex(rawAuthIndex);
@@ -1830,17 +2227,32 @@ const fetchKimiQuota = async (file: AuthFileItem, t: TFunction): Promise<KimiQuo
     header: { ...KIMI_REQUEST_HEADERS },
   });
 
-  if (result.statusCode < 200 || result.statusCode >= 300) {
-    throw createStatusError(getApiCallErrorMessage(result), result.statusCode);
-  }
-
-  const payload = parseKimiUsagePayload(result.body ?? result.bodyText);
-  if (!payload) {
-    throw new Error(t('kimi_quota.empty_data'));
-  }
-
-  return buildKimiQuotaRows(payload);
+  return parseKimiQuotaResult(result, t);
 };
+
+const fetchKimiQuotaBatch = (files: AuthFileItem[], t: TFunction) =>
+  executeQuotaBatch(
+    files,
+    (file, translate) => {
+      const authIndex = normalizeAuthIndex(file['auth_index'] ?? file.authIndex);
+      if (!authIndex) throw new Error(translate('kimi_quota.missing_auth_index'));
+      return {
+        requests: [
+          {
+            key: 'usage',
+            request: {
+              authIndex,
+              method: 'GET',
+              url: KIMI_USAGE_URL,
+              header: { ...KIMI_REQUEST_HEADERS },
+            },
+          },
+        ],
+        resolve: (results) => parseKimiQuotaResult(requireBatchValue(results, 'usage'), translate),
+      };
+    },
+    t
+  );
 
 const renderKimiItems = (
   quota: KimiQuotaState,
@@ -1941,6 +2353,15 @@ const buildXaiRequestHeaders = (file: AuthFileItem): Record<string, string> => {
   return headers;
 };
 
+const parseXaiBillingResult = (result: ApiCallResult): XaiBillingSummary | null => {
+  if (result.statusCode < 200 || result.statusCode >= 300) {
+    throw createStatusError(getApiCallErrorMessage(result), result.statusCode);
+  }
+
+  const payload = parseXaiBillingPayload(result.body ?? result.bodyText);
+  return buildXaiBillingSummary(payload?.config);
+};
+
 const requestXaiBilling = async (
   authIndex: string,
   url: string,
@@ -1953,12 +2374,22 @@ const requestXaiBilling = async (
     header,
   });
 
-  if (result.statusCode < 200 || result.statusCode >= 300) {
-    throw createStatusError(getApiCallErrorMessage(result), result.statusCode);
+  return parseXaiBillingResult(result);
+};
+
+const parseXaiPaidHealthResults = (
+  profileResult: ApiCallResult | null,
+  chatResult: ApiCallResult
+): XaiBillingSummary => {
+  if (chatResult.statusCode < 200 || chatResult.statusCode >= 300) {
+    throw createStatusError(getApiCallErrorMessage(chatResult), chatResult.statusCode);
   }
 
-  const payload = parseXaiBillingPayload(result.body ?? result.bodyText);
-  return buildXaiBillingSummary(payload?.config);
+  const profile =
+    profileResult && profileResult.statusCode >= 200 && profileResult.statusCode < 300
+      ? profileResult.body
+      : null;
+  return buildXaiPaidHealthSummary(profile);
 };
 
 const requestXaiPaidHealth = async (authIndex: string): Promise<XaiBillingSummary> => {
@@ -1993,20 +2424,10 @@ const requestXaiPaidHealth = async (authIndex: string): Promise<XaiBillingSummar
   ]);
 
   if (chatRequest.status === 'rejected') throw chatRequest.reason;
-  if (chatRequest.value.statusCode < 200 || chatRequest.value.statusCode >= 300) {
-    throw createStatusError(
-      getApiCallErrorMessage(chatRequest.value),
-      chatRequest.value.statusCode
-    );
-  }
-
-  const profile =
-    profileRequest.status === 'fulfilled' &&
-    profileRequest.value.statusCode >= 200 &&
-    profileRequest.value.statusCode < 300
-      ? profileRequest.value.body
-      : null;
-  return buildXaiPaidHealthSummary(profile);
+  return parseXaiPaidHealthResults(
+    profileRequest.status === 'fulfilled' ? profileRequest.value : null,
+    chatRequest.value
+  );
 };
 
 const fetchXaiQuota = async (file: AuthFileItem, t: TFunction): Promise<XaiBillingSummary> => {
@@ -2042,6 +2463,100 @@ const fetchXaiQuota = async (file: AuthFileItem, t: TFunction): Promise<XaiBilli
     throw billingError;
   }
 };
+
+const fetchXaiQuotaBatch = (files: AuthFileItem[], t: TFunction) =>
+  executeQuotaBatch(
+    files,
+    (file, translate) => {
+      const authIndex = normalizeAuthIndex(file['auth_index'] ?? file.authIndex);
+      if (!authIndex) throw new Error(translate('xai_quota.missing_auth_index'));
+
+      if (isPaidXaiAuthFile(file)) {
+        return {
+          requests: [
+            {
+              key: 'profile',
+              request: {
+                authIndex,
+                method: 'GET',
+                url: XAI_API_ME_URL,
+                header: XAI_API_REQUEST_HEADERS,
+              },
+            },
+            {
+              key: 'chat',
+              request: {
+                authIndex,
+                method: 'POST',
+                url: XAI_API_CHAT_URL,
+                header: { ...XAI_API_REQUEST_HEADERS, 'Content-Type': 'application/json' },
+                data: JSON.stringify({
+                  model: XAI_PAID_HEALTH_MODEL,
+                  messages: [{ role: 'user', content: 'ping' }],
+                  max_tokens: 1,
+                  stream: false,
+                }),
+              },
+            },
+          ],
+          resolve: (results) => {
+            const profile = results.get('profile');
+            return parseXaiPaidHealthResults(
+              profile?.status === 'success' ? profile.value : null,
+              requireBatchValue(results, 'chat')
+            );
+          },
+        };
+      }
+
+      // The paid health fallback sends a real chat request. Bulk refresh must not
+      // speculatively execute it for credentials that are not identified as paid.
+      const requestHeader = buildXaiRequestHeaders(file);
+      return {
+        requests: [
+          {
+            key: 'weekly',
+            request: {
+              authIndex,
+              method: 'GET',
+              url: XAI_BILLING_WEEKLY_URL,
+              header: requestHeader,
+            },
+          },
+          {
+            key: 'monthly',
+            request: {
+              authIndex,
+              method: 'GET',
+              url: XAI_BILLING_MONTHLY_URL,
+              header: requestHeader,
+            },
+          },
+        ],
+        resolve: (results) => {
+          let weeklySummary: XaiBillingSummary | null = null;
+          let monthlySummary: XaiBillingSummary | null = null;
+          let weeklyError: unknown;
+          let monthlyError: unknown;
+          try {
+            weeklySummary = parseXaiBillingResult(requireBatchValue(results, 'weekly'));
+          } catch (error: unknown) {
+            weeklyError = error;
+          }
+          try {
+            monthlySummary = parseXaiBillingResult(requireBatchValue(results, 'monthly'));
+          } catch (error: unknown) {
+            monthlyError = error;
+          }
+          const summary = mergeXaiBillingSummaries(weeklySummary, monthlySummary);
+          if (summary) return summary;
+          if (weeklyError && monthlyError) throw weeklyError;
+          throw new Error(translate('xai_quota.empty_data'));
+        },
+      };
+    },
+    t
+  );
 
 const formatUsdFromCents = (cents: number | null): string => {
   if (cents === null) return '--';
@@ -2294,6 +2809,7 @@ export const KIMI_CONFIG: QuotaConfig<KimiQuotaState, KimiQuotaRow[]> = {
   cardIdleMessageKey: 'quota_management.card_idle_hint',
   filterFn: (file) => isKimiFile(file) && !isDisabledAuthFile(file),
   fetchQuota: fetchKimiQuota,
+  fetchQuotaBatch: fetchKimiQuotaBatch,
   storeSelector: (state) => state.kimiQuota,
   storeSetter: 'setKimiQuota',
   buildLoadingState: () => ({ status: 'loading', rows: [] }),
@@ -2317,6 +2833,7 @@ export const XAI_CONFIG: QuotaConfig<XaiQuotaState, XaiBillingSummary> = {
   cardIdleMessageKey: 'quota_management.card_idle_hint',
   filterFn: (file) => isXaiFile(file) && !isDisabledAuthFile(file),
   fetchQuota: fetchXaiQuota,
+  fetchQuotaBatch: fetchXaiQuotaBatch,
   storeSelector: (state) => state.xaiQuota,
   storeSetter: 'setXaiQuota',
   buildLoadingState: () => ({ status: 'loading', billing: null }),

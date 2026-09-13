@@ -1,10 +1,9 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { IconKey, IconBot, IconFileText, IconSatellite } from '@/components/ui/icons';
-import { useAuthStore, useConfigStore, useModelsStore } from '@/stores';
-import { apiKeysApi, providersApi, authFilesApi } from '@/services/api';
-import { getDashboardModelsStatValue } from '@/utils/dashboard';
+import { useAuthStore, useConfigStore } from '@/stores';
+import { dashboardApi, type DashboardSummary } from '@/services/api';
 import styles from './DashboardPage.module.scss';
 
 interface QuickStat {
@@ -14,13 +13,6 @@ interface QuickStat {
   path: string;
   loading?: boolean;
   sublabel?: string;
-}
-
-interface ProviderStats {
-  gemini: number | null;
-  codex: number | null;
-  claude: number | null;
-  openai: number | null;
 }
 
 type TimeOfDay = 'morning' | 'afternoon' | 'evening' | 'night';
@@ -41,37 +33,14 @@ export function DashboardPage() {
   const apiBase = useAuthStore((state) => state.apiBase);
   const config = useConfigStore((state) => state.config);
 
-  const models = useModelsStore((state) => state.models);
-  const modelsLoading = useModelsStore((state) => state.loading);
-  const modelsError = useModelsStore((state) => state.error);
-  const fetchModelsFromStore = useModelsStore((state) => state.fetchModels);
-
-  const [stats, setStats] = useState<{
-    apiKeys: number | null;
-    authFiles: number | null;
-  }>({
-    apiKeys: null,
-    authFiles: null,
-  });
-
-  const [providerStats, setProviderStats] = useState<ProviderStats>({
-    gemini: null,
-    codex: null,
-    claude: null,
-    openai: null,
-  });
-
-  const [loading, setLoading] = useState(true);
+  const [summaryResult, setSummaryResult] = useState<{
+    apiBase: string;
+    value: DashboardSummary | null;
+  } | null>(null);
 
   // Time-of-day state for dynamic greeting
   const [timeOfDay, setTimeOfDay] = useState<TimeOfDay>(getTimeOfDay);
   const [currentTime, setCurrentTime] = useState(() => new Date());
-
-  const apiKeysCache = useRef<string[]>([]);
-
-  useEffect(() => {
-    apiKeysCache.current = [];
-  }, [apiBase, config?.apiKeys]);
 
   // Update time every 60 seconds
   useEffect(() => {
@@ -82,162 +51,78 @@ export function DashboardPage() {
     return () => clearInterval(id);
   }, []);
 
-  const normalizeApiKeyList = (input: unknown): string[] => {
-    if (!Array.isArray(input)) return [];
-    const seen = new Set<string>();
-    const keys: string[] = [];
-
-    input.forEach((item) => {
-      const record =
-        item !== null && typeof item === 'object' && !Array.isArray(item)
-          ? (item as Record<string, unknown>)
-          : null;
-      const value =
-        typeof item === 'string'
-          ? item
-          : record
-            ? (record['api-key'] ?? record['apiKey'] ?? record.key ?? record.Key)
-            : '';
-      const trimmed = String(value ?? '').trim();
-      if (!trimmed || seen.has(trimmed)) return;
-      seen.add(trimmed);
-      keys.push(trimmed);
-    });
-
-    return keys;
-  };
-
-  const resolveApiKeysForModels = useCallback(async () => {
-    if (apiKeysCache.current.length) {
-      return apiKeysCache.current;
-    }
-
-    const configKeys = normalizeApiKeyList(config?.apiKeys);
-    if (configKeys.length) {
-      apiKeysCache.current = configKeys;
-      return configKeys;
-    }
-
-    try {
-      const list = await apiKeysApi.list();
-      const normalized = normalizeApiKeyList(list);
-      if (normalized.length) {
-        apiKeysCache.current = normalized;
-      }
-      return normalized;
-    } catch {
-      return [];
-    }
-  }, [config?.apiKeys]);
-
-  const fetchModels = useCallback(async () => {
+  useEffect(() => {
     if (connectionStatus !== 'connected' || !apiBase) {
       return;
     }
 
-    try {
-      const apiKeys = await resolveApiKeysForModels();
-      const primaryKey = apiKeys[0];
-      await fetchModelsFromStore(apiBase, primaryKey);
-    } catch {
-      // Ignore model fetch errors on dashboard
-    }
-  }, [connectionStatus, apiBase, resolveApiKeysForModels, fetchModelsFromStore]);
+    let active = true;
+    dashboardApi
+      .getSummary()
+      .then((nextSummary) => {
+        if (active) setSummaryResult({ apiBase, value: nextSummary });
+      })
+      .catch(() => {
+        if (active) setSummaryResult({ apiBase, value: null });
+      });
 
-  useEffect(() => {
-    const fetchStats = async () => {
-      setLoading(true);
-      try {
-        const [keysRes, filesRes, geminiRes, codexRes, claudeRes, openaiRes] =
-          await Promise.allSettled([
-            apiKeysApi.list(),
-            authFilesApi.list(),
-            providersApi.getGeminiKeys(),
-            providersApi.getCodexConfigs(),
-            providersApi.getClaudeConfigs(),
-            providersApi.getOpenAIProviders(),
-          ]);
-
-        setStats({
-          apiKeys: keysRes.status === 'fulfilled' ? keysRes.value.length : null,
-          authFiles: filesRes.status === 'fulfilled' ? filesRes.value.files.length : null,
-        });
-
-        setProviderStats({
-          gemini: geminiRes.status === 'fulfilled' ? geminiRes.value.length : null,
-          codex: codexRes.status === 'fulfilled' ? codexRes.value.length : null,
-          claude: claudeRes.status === 'fulfilled' ? claudeRes.value.length : null,
-          openai: openaiRes.status === 'fulfilled' ? openaiRes.value.length : null,
-        });
-      } finally {
-        setLoading(false);
-      }
+    return () => {
+      active = false;
     };
+  }, [connectionStatus, apiBase]);
 
-    if (connectionStatus === 'connected') {
-      fetchStats();
-      fetchModels();
-    } else {
-      setLoading(false);
-    }
-  }, [connectionStatus, fetchModels]);
+  const summary =
+    connectionStatus === 'connected' && summaryResult?.apiBase === apiBase
+      ? summaryResult.value
+      : null;
+  const loading =
+    connectionStatus === 'connected' && Boolean(apiBase) && summaryResult?.apiBase !== apiBase;
 
-  // Calculate total provider keys only when all provider stats are available.
-  const providerStatsReady =
-    providerStats.gemini !== null &&
-    providerStats.codex !== null &&
-    providerStats.claude !== null &&
-    providerStats.openai !== null;
-  const hasProviderStats =
-    providerStats.gemini !== null ||
-    providerStats.codex !== null ||
-    providerStats.claude !== null ||
-    providerStats.openai !== null;
-  const totalProviderKeys = providerStatsReady
-    ? (providerStats.gemini ?? 0) +
-      (providerStats.codex ?? 0) +
-      (providerStats.claude ?? 0) +
-      (providerStats.openai ?? 0)
+  const totalProviderKeys = summary
+    ? summary.providers.gemini +
+      summary.providers.codex +
+      summary.providers.claude +
+      summary.providers.openai
     : 0;
 
   const quickStats: QuickStat[] = [
     {
       label: t('dashboard.management_keys'),
-      value: stats.apiKeys ?? '-',
+      value: summary?.api_keys ?? '-',
       icon: <IconKey size={24} />,
       path: '/config',
-      loading: loading && stats.apiKeys === null,
+      loading,
       sublabel: t('nav.config_management'),
     },
     {
       label: t('nav.ai_providers'),
-      value: loading ? '-' : providerStatsReady ? totalProviderKeys : '-',
+      value: summary ? totalProviderKeys : '-',
       icon: <IconBot size={24} />,
       path: '/ai-providers',
       loading: loading,
-      sublabel: hasProviderStats
+      sublabel: summary
         ? t('dashboard.provider_keys_detail', {
-            gemini: providerStats.gemini ?? '-',
-            codex: providerStats.codex ?? '-',
-            claude: providerStats.claude ?? '-',
-            openai: providerStats.openai ?? '-',
+            gemini: summary.providers.gemini,
+            codex: summary.providers.codex,
+            claude: summary.providers.claude,
+            openai: summary.providers.openai,
           })
         : undefined,
     },
     {
       label: t('nav.auth_files'),
-      value: stats.authFiles ?? '-',
+      value: summary?.auth_files ?? '-',
       icon: <IconFileText size={24} />,
       path: '/auth-files',
-      loading: loading && stats.authFiles === null,
+      loading,
       sublabel: t('dashboard.oauth_credentials'),
     },
     {
       label: t('dashboard.available_models'),
-      value: getDashboardModelsStatValue(models.length, modelsLoading, modelsError),
+      value: summary?.models ?? '-',
       icon: <IconSatellite size={24} />,
       path: '/system',
-      loading: modelsLoading,
+      loading,
       sublabel: t('dashboard.available_models_desc'),
     },
   ];

@@ -5,6 +5,8 @@
 import type { AxiosRequestConfig } from 'axios';
 import { apiClient } from './client';
 
+const API_CALL_BATCH_TIMEOUT_MS = 120_000;
+
 export interface ApiCallRequest {
   authIndex?: string;
   method: string;
@@ -13,12 +15,29 @@ export interface ApiCallRequest {
   data?: string;
 }
 
+export type ApiCallBatchRequest = ApiCallRequest & {
+  id: string;
+};
+
 export interface ApiCallResult<T = unknown> {
   statusCode: number;
   header: Record<string, string[]>;
   bodyText: string;
   body: T | null;
 }
+
+export type ApiCallBatchResult =
+  | { id: string; status: 'success'; value: ApiCallResult }
+  | { id: string; status: 'error'; error: { message: string; status: number } };
+
+type ApiCallBatchWireResult = {
+  id?: unknown;
+  status_code?: unknown;
+  header?: unknown;
+  body?: unknown;
+  error?: unknown;
+  error_status?: unknown;
+};
 
 const normalizeBody = (input: unknown): { bodyText: string; body: unknown | null } => {
   if (input === undefined || input === null) {
@@ -90,5 +109,46 @@ export const apiCallApi = {
       bodyText,
       body,
     };
+  },
+
+  batch: async (requests: ApiCallBatchRequest[]): Promise<ApiCallBatchResult[]> => {
+    const response = await apiClient.post<{ results?: ApiCallBatchWireResult[] }>(
+      '/custom/api-call/batch',
+      { requests },
+      { timeout: API_CALL_BATCH_TIMEOUT_MS }
+    );
+    const results = response?.results;
+    if (!Array.isArray(results) || results.length !== requests.length) {
+      throw new Error('Invalid batch API response');
+    }
+
+    return results.map((result, index): ApiCallBatchResult => {
+      const expectedId = requests[index]?.id;
+      if (typeof result?.id !== 'string' || result.id !== expectedId) {
+        throw new Error('Invalid batch API response');
+      }
+      if (typeof result.error === 'string' && result.error) {
+        return {
+          id: result.id,
+          status: 'error',
+          error: {
+            message: result.error,
+            status: Number(result.error_status ?? 0),
+          },
+        };
+      }
+
+      const statusCode = Number(result.status_code ?? 0);
+      const header =
+        result.header && typeof result.header === 'object' && !Array.isArray(result.header)
+          ? (result.header as Record<string, string[]>)
+          : {};
+      const { bodyText, body } = normalizeBody(result.body);
+      return {
+        id: result.id,
+        status: 'success',
+        value: { statusCode, header, bodyText, body },
+      };
+    });
   },
 };

@@ -17,6 +17,11 @@ import type { OAuthModelAliasEntry } from '@/types';
 
 type StatusError = { status?: number };
 type AuthFileStatusResponse = { status: string; disabled: boolean };
+type AuthFileCooldownResetResponse = {
+  status: string;
+  auth_index: string;
+  models: string[];
+};
 type DownloadedAuthFile = { blob: Blob; filename: string };
 type AuthFilesUploadOptions = { onProgress?: AuthFilesUploadProgressHandler };
 export type AuthFilesDeleteResult = {
@@ -336,6 +341,9 @@ export const authFilesApi = {
 
   setStatus: (name: string, disabled: boolean) =>
     apiClient.patch<AuthFileStatusResponse>('/auth-files/status', { name, disabled }),
+
+  clearCooldown: (authIndex: string) =>
+    apiClient.post<AuthFileCooldownResetResponse>('/reset-quota', { auth_index: authIndex }),
 
   patchFields: (name: string, fields: AuthFileFieldsPatch) =>
     apiClient.patch('/auth-files/fields', { name, ...fields }),

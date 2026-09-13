@@ -8,7 +8,6 @@ import axios from 'axios';
 import { Card } from '@/components/ui/Card';
 import { Button } from '@/components/ui/Button';
 import { EmptyState } from '@/components/ui/EmptyState';
-import { triggerHeaderRefresh } from '@/hooks/useHeaderRefresh';
 import {
   captureQuotaCacheGeneration,
   commitIfQuotaCacheCurrent,
@@ -90,8 +89,6 @@ export function QuotaSection<TState extends QuotaStatusState, TData>({
   const loadControllerRef = useRef<AbortController | null>(null);
   const loadRequestIdRef = useRef(0);
   const mountedRef = useRef(true);
-  const pendingQuotaRefreshRef = useRef(false);
-  const prevFilesLoadingRef = useRef(filesLoading);
 
   useLayoutEffect(() => {
     mountedRef.current = true;
@@ -211,24 +208,11 @@ export function QuotaSection<TState extends QuotaStatusState, TData>({
 
   const { quota, loadQuota } = useQuotaLoader(config);
 
-  const handleRefresh = useCallback(() => {
-    pendingQuotaRefreshRef.current = true;
-    void triggerHeaderRefresh();
-  }, []);
-
-  useEffect(() => {
-    const wasLoading = prevFilesLoadingRef.current;
-    prevFilesLoadingRef.current = filesLoading;
-
-    if (!pendingQuotaRefreshRef.current) return;
-    if (filesLoading) return;
-    if (!wasLoading) return;
-
-    pendingQuotaRefreshRef.current = false;
+  const handleRefresh = useCallback(async () => {
     const scope = effectiveViewMode === 'all' ? 'all' : 'page';
     if (files.length === 0) return;
-    void loadQuota(files, scope, setLoading);
-  }, [filesLoading, effectiveViewMode, files, loadQuota, setLoading]);
+    await loadQuota(files, scope, setLoading);
+  }, [effectiveViewMode, files, loadQuota, setLoading]);
 
   useEffect(() => {
     if (filesLoading) return;

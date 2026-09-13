@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { authFilesApi, type AuthFileFieldsPatch } from '@/services/api';
-import type { AuthFileItem } from '@/types';
+import type { AuthFileCooldown, AuthFileItem } from '@/types';
 import { useNotificationStore } from '@/stores';
 import {
   applyAuthFileWebsockets,
@@ -46,6 +46,9 @@ export type PrefixProxyEditorFieldValue = string | boolean;
 export type PrefixProxyEditorState = {
   fileName: string;
   fileInfoText: string;
+  authIndex: string;
+  cooldowns: AuthFileCooldown[];
+  cooldownResetting: boolean;
   providerKey: string;
   supportsWebsockets: boolean;
   supportsUsingApi: boolean;
@@ -88,9 +91,29 @@ export type UseAuthFilesPrefixProxyEditorResult = {
     value: PrefixProxyEditorFieldValue
   ) => void;
   handlePrefixProxySave: () => Promise<void>;
+  handleCooldownReset: () => Promise<void>;
 };
 
 const INVALID_CONTENT_PREVIEW_LIMIT = 1000;
+
+const readActiveCooldowns = (file: AuthFileItem): AuthFileCooldown[] => {
+  if (!Array.isArray(file.cooldowns)) return [];
+  const now = Date.now();
+  return file.cooldowns.filter((cooldown) => {
+    if (!cooldown || cooldown.status !== 'cooling') return false;
+    const nextRetryAt = Date.parse(cooldown.next_retry_after);
+    return Number.isFinite(nextRetryAt) && nextRetryAt > now;
+  });
+};
+
+const clearCooldownsFromFileInfo = (text: string): string => {
+  try {
+    const parsed = JSON.parse(text) as Record<string, unknown>;
+    return JSON.stringify({ ...parsed, cooldowns: [] }, null, 2);
+  } catch {
+    return text;
+  }
+};
 
 const buildInvalidContentPreview = (text: string): string => {
   const trimmed = text.trim();
@@ -435,6 +458,9 @@ export function useAuthFilesPrefixProxyEditor(
     setPrefixProxyEditor({
       fileName: name,
       fileInfoText: JSON.stringify(file, null, 2),
+      authIndex: String(file['auth_index'] ?? file.authIndex ?? '').trim(),
+      cooldowns: readActiveCooldowns(file),
+      cooldownResetting: false,
       providerKey,
       supportsWebsockets,
       supportsUsingApi,
@@ -618,6 +644,39 @@ export function useAuthFilesPrefixProxyEditor(
     }
   };
 
+  const handleCooldownReset = async () => {
+    if (!prefixProxyEditor || prefixProxyEditor.cooldownResetting) return;
+    if (!prefixProxyEditor.authIndex || prefixProxyEditor.cooldowns.length === 0) return;
+
+    const { authIndex, fileName } = prefixProxyEditor;
+    setPrefixProxyEditor((prev) => {
+      if (!prev || prev.fileName !== fileName) return prev;
+      return { ...prev, cooldownResetting: true };
+    });
+
+    try {
+      await authFilesApi.clearCooldown(authIndex);
+      setPrefixProxyEditor((prev) => {
+        if (!prev || prev.fileName !== fileName) return prev;
+        return {
+          ...prev,
+          cooldowns: [],
+          cooldownResetting: false,
+          fileInfoText: clearCooldownsFromFileInfo(prev.fileInfoText),
+        };
+      });
+      showNotification(t('auth_files.clear_cooldown_success', { name: fileName }), 'success');
+      await loadFiles();
+    } catch (err: unknown) {
+      const errorMessage = err instanceof Error ? err.message : '';
+      showNotification(`${t('auth_files.clear_cooldown_failed')}: ${errorMessage}`, 'error');
+      setPrefixProxyEditor((prev) => {
+        if (!prev || prev.fileName !== fileName) return prev;
+        return { ...prev, cooldownResetting: false };
+      });
+    }
+  };
+
   return {
     prefixProxyEditor,
     prefixProxyUpdatedText,
@@ -626,6 +685,7 @@ export function useAuthFilesPrefixProxyEditor(
     closePrefixProxyEditor,
     handlePrefixProxyChange,
     handlePrefixProxySave,
+    handleCooldownReset,
   };
 }
 

@@ -24,6 +24,7 @@ import {
   getTypeLabel,
   isRuntimeOnlyAuthFile,
   parsePriorityValue,
+  readCodexAuthFileWebsockets,
   resolveAuthFileStats,
   supportsAuthFileManualRefresh,
   type QuotaProviderType,
@@ -36,6 +37,7 @@ import {
 import type { AuthFileStatusBarData } from '@/features/authFiles/hooks/useAuthFilesStatusBarCache';
 import { useAuthFileQuotaRefresh } from '@/features/authFiles/hooks/useAuthFileQuotaRefresh';
 import { AuthFileQuotaSection } from '@/features/authFiles/components/AuthFileQuotaSection';
+import { isCodexFile } from '@/utils/quota/validators';
 import styles from '@/pages/AuthFilesPage.module.scss';
 
 const HEALTHY_STATUS_MESSAGES = new Set(['ok', 'healthy', 'ready', 'success', 'available']);
@@ -147,11 +149,21 @@ export function AuthFileCard(props: AuthFileCardProps) {
 
   const priorityValue = parsePriorityValue(file.priority ?? file['priority']) ?? 0;
   const noteValue = typeof file.note === 'string' ? file.note.trim() : '';
+  const showWebsocketsBadge = isCodexFile(file) && readCodexAuthFileWebsockets(file);
 
   return (
     <div
       className={`${styles.fileCard} ${providerCardClass} ${selected ? styles.fileCardSelected : ''} ${file.disabled ? styles.fileCardDisabled : ''}`}
     >
+      {showWebsocketsBadge && (
+        <span
+          className={styles.websocketsBadge}
+          title={t('auth_files.websockets_label')}
+          aria-label={t('auth_files.websockets_label')}
+        >
+          WS
+        </span>
+      )}
       <div className={styles.fileCardLayout}>
         <div className={styles.fileCardMain}>
           <div className={styles.cardHeader}>

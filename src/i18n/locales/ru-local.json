@@ -24,6 +24,14 @@
     "time": {
       "yesterday": "Вчера",
       "dayBeforeYesterday": "Позавчера"
+    },
+    "channel": {
+      "all_request_keys": "Все ключи запросов"
+    },
+    "logs": {
+      "fast_badge": "FAST",
+      "all_request_keys": "Все ключи запросов",
+      "header_request_key": "Ключ запроса"
     }
   }
 }

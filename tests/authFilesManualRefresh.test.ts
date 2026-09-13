@@ -29,6 +29,24 @@ describe('authFilesApi.requestManualRefresh', () => {
   });
 });
 
+describe('authFilesApi.clearCooldown', () => {
+  test('resets local cooldown by auth index', async () => {
+    const postSpy = spyOn(apiClient, 'post').mockResolvedValue({
+      status: 'ok',
+      auth_index: 'auth-1',
+      models: ['gpt-5.4'],
+    });
+
+    try {
+      await authFilesApi.clearCooldown('auth-1');
+
+      expect(postSpy).toHaveBeenCalledWith('/reset-quota', { auth_index: 'auth-1' });
+    } finally {
+      postSpy.mockRestore();
+    }
+  });
+});
+
 describe('supportsAuthFileManualRefresh', () => {
   test('accepts OAuth providers whose credentials refresh via the expired metadata field', () => {
     for (const provider of ['antigravity', 'claude', 'codex', 'kimi', 'xai']) {

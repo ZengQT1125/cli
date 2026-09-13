@@ -79,34 +79,19 @@ export function AiProvidersPage() {
     }
     setError('');
     try {
-      const [configResult, vertexResult] = await Promise.allSettled([
-        fetchConfig(),
-        providersApi.getVertexConfigs(),
-      ]);
-
-      if (configResult.status !== 'fulfilled') {
-        throw configResult.reason;
-      }
-
-      const data = configResult.value;
+      const data = await fetchConfig();
       setGeminiKeys(data?.geminiApiKeys || []);
       setCodexConfigs(data?.codexApiKeys || []);
       setClaudeConfigs(data?.claudeApiKeys || []);
       setVertexConfigs(data?.vertexApiKeys || []);
       setOpenaiProviders(data?.openaiCompatibility || []);
-
-      if (vertexResult.status === 'fulfilled') {
-        setVertexConfigs(vertexResult.value || []);
-        updateConfigValue('vertex-api-key', vertexResult.value || []);
-        clearCache('vertex-api-key');
-      }
     } catch (err: unknown) {
       const message = getErrorMessage(err) || t('notification.refresh_failed');
       setError(message);
     } finally {
       setLoading(false);
     }
-  }, [clearCache, fetchConfig, isCacheValid, t, updateConfigValue]);
+  }, [fetchConfig, isCacheValid, t]);
 
   useEffect(() => {
     if (hasMounted.current) return;

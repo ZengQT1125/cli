@@ -9,6 +9,7 @@ import type {
   PrefixProxyEditorFieldValue,
   PrefixProxyEditorState,
 } from '@/features/authFiles/hooks/useAuthFilesPrefixProxyEditor';
+import { formatDateTime } from '@/utils/format';
 import styles from '@/pages/AuthFilesPage.module.scss';
 
 export type AuthFilesPrefixProxyEditorModalProps = {
@@ -19,6 +20,7 @@ export type AuthFilesPrefixProxyEditorModalProps = {
   onClose: () => void;
   onCopyText: (text: string) => void | Promise<void>;
   onSave: () => void;
+  onClearCooldown: () => void;
   onChange: (field: PrefixProxyEditorField, value: PrefixProxyEditorFieldValue) => void;
 };
 
@@ -33,10 +35,20 @@ const formatJsonText = (text: string) => {
 
 export function AuthFilesPrefixProxyEditorModal(props: AuthFilesPrefixProxyEditorModalProps) {
   const { t } = useTranslation();
-  const { disableControls, editor, updatedText, dirty, onClose, onCopyText, onSave, onChange } =
-    props;
+  const {
+    disableControls,
+    editor,
+    updatedText,
+    dirty,
+    onClose,
+    onCopyText,
+    onSave,
+    onClearCooldown,
+    onChange,
+  } = props;
   const invalidContentPreview = editor?.invalidContentPreview ?? '';
   const previewText = formatJsonText(updatedText);
+  const cooldowns = editor?.cooldowns ?? [];
 
   return (
     <Modal
@@ -90,6 +102,62 @@ export function AuthFilesPrefixProxyEditorModal(props: AuthFilesPrefixProxyEdito
           ) : (
             <>
               {editor.error && <div className={styles.prefixProxyError}>{editor.error}</div>}
+              {cooldowns.length > 0 && (
+                <div className={styles.authCooldownSummary}>
+                  <div className={styles.authCooldownSummaryRow}>
+                    <span className={styles.authCooldownSummaryLabel}>
+                      {t('auth_files.cooldown_status_label')}
+                    </span>
+                    <div className={styles.authCooldownActions}>
+                      <span
+                        className={`${styles.authCooldownStatus} ${styles.authCooldownStatusActive}`}
+                      >
+                        {t('auth_files.cooldown_status_active', { count: cooldowns.length })}
+                      </span>
+                      <Button
+                        variant="secondary"
+                        size="sm"
+                        onClick={onClearCooldown}
+                        loading={editor.cooldownResetting}
+                        disabled={disableControls || editor.cooldownResetting || !editor.authIndex}
+                      >
+                        {t('auth_files.clear_cooldown_button')}
+                      </Button>
+                    </div>
+                  </div>
+                  <div className={styles.authCooldownList}>
+                    {cooldowns.map((cooldown, index) => (
+                      <div
+                        className={styles.authCooldownItem}
+                        key={`${cooldown.model ?? ''}-${cooldown.next_retry_after}-${index}`}
+                      >
+                        <div className={styles.authCooldownItemRow}>
+                          <span className={styles.authCooldownSummaryLabel}>
+                            {t('auth_files.cooldown_model_label')}
+                          </span>
+                          <strong>
+                            {cooldown.model || t('auth_files.cooldown_scope_credential')}
+                          </strong>
+                        </div>
+                        <div className={styles.authCooldownItemRow}>
+                          <span className={styles.authCooldownSummaryLabel}>
+                            {t('auth_files.cooldown_recovery_label')}
+                          </span>
+                          <span>{formatDateTime(cooldown.next_retry_after)}</span>
+                        </div>
+                        {cooldown.reason && (
+                          <div className={styles.authCooldownItemRow}>
+                            <span className={styles.authCooldownSummaryLabel}>
+                              {t('auth_files.cooldown_reason_label')}
+                            </span>
+                            <span>{cooldown.reason}</span>
+                          </div>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
               <div className={styles.prefixProxyJsonWrapper}>
                 <label className={styles.prefixProxyLabel}>
                   {t('auth_files.prefix_proxy_info_label')}

@@ -116,6 +116,8 @@ export interface MonitorRequestLogsResponse {
 }
 
 export interface MonitorStatsQuery extends MonitorTimeRangeQuery {
+  page?: number;
+  page_size?: number;
   limit?: number;
   summary?: boolean;
   api?: string;
@@ -136,6 +138,10 @@ export interface MonitorModelStatsItem {
   output_tokens: number;
   cached_tokens: number;
   cache_write_tokens: number;
+  fast_input_tokens?: number;
+  fast_output_tokens?: number;
+  fast_cached_tokens?: number;
+  fast_cache_write_tokens?: number;
   success_rate: number;
   last_request_at?: string;
   recent_requests: MonitorRecentRequest[];
@@ -159,7 +165,11 @@ export interface MonitorChannelStatsItem {
 export interface MonitorChannelStatsResponse {
   items: MonitorChannelStatsItem[];
   total: number;
-  limit: number;
+  page: number;
+  page_size: number;
+  total_pages: number;
+  has_prev: boolean;
+  has_next: boolean;
   filters?: MonitorFilterOptions;
   time_range?: {
     start_time?: string;
@@ -276,6 +286,20 @@ export type MonitorKeyStatsResponse = Omit<MonitorKeyStatsWireResponse, 'filter'
 
 export type MonitorKeyStatsQuery = { auth_index?: string } | string[];
 
+export interface MonitorKeyStatsOptions {
+  forceRefresh?: boolean;
+}
+
+export const KEY_STATS_STALE_TIME_MS = 240_000;
+
+let fullKeyStatsCache:
+  | {
+      configRevision: number;
+      refreshedAt: number;
+      response: MonitorKeyStatsResponse;
+    }
+  | undefined;
+
 export interface MonitorRequestDetailItem {
   timestamp: string;
   method: string;
@@ -351,9 +375,25 @@ export const monitorApi = {
 
   getServiceHealth: () => gatedGet<MonitorServiceHealthData>('/custom/monitor/service-health'),
 
-  getKeyStats: async (query: MonitorKeyStatsQuery = []): Promise<MonitorKeyStatsResponse> => {
+  getKeyStats: async (
+    query: MonitorKeyStatsQuery = [],
+    options: MonitorKeyStatsOptions = {}
+  ): Promise<MonitorKeyStatsResponse> => {
     const authIndexes = Array.isArray(query) ? query : query.auth_index ? [query.auth_index] : [];
-    const key = buildMonitorRequestKey('/custom/monitor/key-stats', { auth_index: authIndexes });
+    const isFullQuery = authIndexes.length === 0;
+    const configRevision = apiClient.getConfigRevision();
+    if (
+      isFullQuery &&
+      !options.forceRefresh &&
+      fullKeyStatsCache?.configRevision === configRevision &&
+      Date.now() - fullKeyStatsCache.refreshedAt < KEY_STATS_STALE_TIME_MS
+    ) {
+      return fullKeyStatsCache.response;
+    }
+
+    const key = `${configRevision}:${buildMonitorRequestKey('/custom/monitor/key-stats', {
+      auth_index: authIndexes,
+    })}`;
     const response = await monitorRequestGate.run(key, () =>
       apiClient.get<MonitorKeyStatsWireResponse>('/custom/monitor/key-stats', {
         params: { auth_index: authIndexes },
@@ -361,6 +401,14 @@ export const monitorApi = {
         timeout: MONITOR_TIMEOUT_MS,
       })
     );
+
+    if (isFullQuery && apiClient.getConfigRevision() === configRevision) {
+      fullKeyStatsCache = {
+        configRevision,
+        refreshedAt: Date.now(),
+        response,
+      };
+    }
 
     if (!Array.isArray(query) && response.filter?.auth_indexes?.length === 1) {
       return {

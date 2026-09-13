@@ -112,11 +112,12 @@ test('监控缓存率基于归一化后的总输入，不会超过 100%', () => 
 });
 
 test('监控 Tok/s 按有效输出耗时计算', () => {
-  assert.equal(formatOutputTokensPerSecond(100, 5000, 2000), '33.3');
-  assert.equal(formatOutputTokensPerSecond(100, 1500, 800), '66.7');
-  assert.equal(formatOutputTokensPerSecond(100, 4000, 0), '25.0');
-  assert.equal(formatOutputTokensPerSecond(0, 4000, 0), '-');
-  assert.equal(formatOutputTokensPerSecond(100, 0, 0), '-');
+  assert.equal(formatOutputTokensPerSecond(100, 5000, 2000, true), '33.3');
+  assert.equal(formatOutputTokensPerSecond(100, 1500, 800, true), '66.7');
+  assert.equal(formatOutputTokensPerSecond(100, 5000, 2000, false), '20.0');
+  assert.equal(formatOutputTokensPerSecond(100, 4000, 0, false), '25.0');
+  assert.equal(formatOutputTokensPerSecond(0, 4000, 0, false), '-');
+  assert.equal(formatOutputTokensPerSecond(100, 0, 0, false), '-');
 });
 
 test('监控费用按模型价格和缓存 token 计算', () => {
@@ -133,6 +134,56 @@ test('OpenAI 费用包含 cache write 且按总输入扣除缓存 token', () => 
   assert.equal(calculateModelCost('gpt-5.6', 200_000, 100_000, 50_000, 50_000), 3.8375);
   assert.equal(calculateMonitorRequestCost('gpt-5.6', 200_000, 100_000, 50_000, 50_000), 3.8375);
   assert.equal(calculateMonitorAggregateCost('gpt-5.6', 200_000, 100_000, 50_000, 50_000), 3.8375);
+});
+
+test('Codex Fast 请求按模型扣费倍率计算', () => {
+  const gpt56Standard = calculateMonitorRequestCost('gpt-5.6', 200_000, 100_000, 50_000, 50_000);
+  const gpt55Standard = calculateMonitorRequestCost(
+    'gpt-5.5-high',
+    200_000,
+    100_000,
+    50_000,
+    50_000
+  );
+  const gpt54Standard = calculateMonitorRequestCost('gpt-5.4', 200_000, 100_000, 50_000, 50_000);
+
+  assert.equal(
+    calculateMonitorRequestCost('gpt-5.6', 200_000, 100_000, 50_000, 50_000, true),
+    gpt56Standard * 2.5
+  );
+  assert.equal(
+    calculateMonitorRequestCost('gpt-5.5-high', 200_000, 100_000, 50_000, 50_000, true),
+    gpt55Standard * 2.5
+  );
+  assert.equal(
+    calculateMonitorRequestCost('gpt-5.4', 200_000, 100_000, 50_000, 50_000, true),
+    gpt54Standard * 2
+  );
+  assert.equal(
+    calculateMonitorRequestCost('gpt-5.3', 200_000, 100_000, 50_000, 50_000, true),
+    calculateMonitorRequestCost('gpt-5.3', 200_000, 100_000, 50_000, 50_000)
+  );
+});
+
+test('监控聚合费用只对 Fast token 部分追加倍率', () => {
+  const standardCost = calculateMonitorAggregateCost('gpt-5.6', 200_000, 100_000, 50_000, 50_000);
+  const fastStandardCost = calculateMonitorAggregateCost(
+    'gpt-5.6',
+    100_000,
+    50_000,
+    25_000,
+    25_000
+  );
+
+  assert.equal(
+    calculateMonitorAggregateCost('gpt-5.6', 200_000, 100_000, 50_000, 50_000, {
+      inputTokens: 100_000,
+      outputTokens: 50_000,
+      cachedTokens: 25_000,
+      cacheWriteTokens: 25_000,
+    }),
+    standardCost + fastStandardCost * 1.5
+  );
 });
 
 test('OpenAI 长上下文阶梯价覆盖 cache read 和 cache write', () => {
@@ -458,12 +509,14 @@ test('失败来源分析按选中模型过滤展开行并重算失败汇总', ()
   assert.equal(raw[0].models.length, 2);
 });
 
-test('监控筛选项在任一渠道或模型筛选激活时保留原始可选集合', () => {
+test('监控筛选项在任一请求 Key、渠道或模型筛选激活时保留原始可选集合', () => {
   const previous = {
+    requestKeys: ['request-key-a', 'request-key-b'],
     channels: ['alpha-key', 'beta-key', 'gamma-key'],
     models: ['gpt-5.5', 'gpt-5.4-mini'],
   };
   const narrowed = {
+    requestKeys: ['request-key-a'],
     channels: ['alpha-key'],
     models: ['gpt-5.5'],
   };
@@ -477,6 +530,11 @@ test('监控筛选项在任一渠道或模型筛选激活时保留原始可选�
 
   assert.deepEqual(
     mergeMonitorFilterOptions(previous, narrowed, { channel: 'alpha-key', model: 'gpt-5.5' }),
+    previous
+  );
+
+  assert.deepEqual(
+    mergeMonitorFilterOptions(previous, narrowed, { requestKey: 'request-key-a' }),
     previous
   );
 
@@ -685,6 +743,54 @@ test('渠道和模型费用分布包含 cache write 成本', () => {
   ]);
   assert.deepEqual(buildMonitorModelDistributionItems(items, 'cost'), [
     { label: 'gpt-5.6', tokens: 300_000, cost: 3.8375 },
+  ]);
+});
+
+test('渠道和模型费用分布只对 Codex Fast token 子集加价', () => {
+  const items = [
+    {
+      source: 'codex-key',
+      total_requests: 2,
+      success_requests: 2,
+      failed_requests: 0,
+      input_tokens: 200_000,
+      output_tokens: 100_000,
+      cached_tokens: 50_000,
+      cache_write_tokens: 50_000,
+      success_rate: 100,
+      recent_requests: [],
+      models: [
+        {
+          model: 'gpt-5.6',
+          requests: 2,
+          success: 2,
+          failed: 0,
+          input_tokens: 200_000,
+          output_tokens: 100_000,
+          cached_tokens: 50_000,
+          cache_write_tokens: 50_000,
+          fast_input_tokens: 100_000,
+          fast_output_tokens: 50_000,
+          fast_cached_tokens: 25_000,
+          fast_cache_write_tokens: 25_000,
+          success_rate: 100,
+          recent_requests: [],
+        },
+      ],
+    },
+  ];
+  const expectedCost = calculateMonitorAggregateCost('gpt-5.6', 200_000, 100_000, 50_000, 50_000, {
+    inputTokens: 100_000,
+    outputTokens: 50_000,
+    cachedTokens: 25_000,
+    cacheWriteTokens: 25_000,
+  });
+
+  assert.deepEqual(buildMonitorChannelDistributionItems(items, {}, 'cost'), [
+    { label: 'code***-key', tokens: 300_000, cost: expectedCost },
+  ]);
+  assert.deepEqual(buildMonitorModelDistributionItems(items, 'cost'), [
+    { label: 'gpt-5.6', tokens: 300_000, cost: expectedCost },
   ]);
 });
 

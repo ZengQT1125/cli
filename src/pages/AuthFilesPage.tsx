@@ -240,6 +240,7 @@ export function AuthFilesPage() {
     closePrefixProxyEditor,
     handlePrefixProxyChange,
     handlePrefixProxySave,
+    handleCooldownReset,
   } = useAuthFilesPrefixProxyEditor({
     disableControls: connectionStatus !== 'connected',
     loadFiles: async () => {
@@ -1036,6 +1037,7 @@ export function AuthFilesPage() {
         onClose={closePrefixProxyEditor}
         onCopyText={copyTextWithNotification}
         onSave={handlePrefixProxySave}
+        onClearCooldown={handleCooldownReset}
         onChange={handlePrefixProxyChange}
       />
 

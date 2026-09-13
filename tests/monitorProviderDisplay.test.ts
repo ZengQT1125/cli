@@ -4,6 +4,7 @@ import {
   formatAuthFileIdentity,
   formatProviderDisplay,
   getProviderDisplayParts,
+  maskSecret,
   resolveProvider,
 } from '../src/utils/monitor.ts';
 
@@ -85,6 +86,9 @@ test('真正的 Gemini OAuth 来源保留 g- 紧凑显示（非 .json 裸邮箱�
 });
 
 test('API Key 仍使用 maskSecret 风格并拼接 provider', () => {
+  assert.equal(maskSecret(API_KEY), 'sk-a***1234');
+  assert.equal(maskSecret('short'), 'shor***');
+  assert.equal(maskSecret(''), '-');
   assert.equal(formatProviderDisplay(API_KEY, providerMap), 'OpenAI (sk-a***1234)');
   assert.equal(formatProviderDisplay(API_KEY, {}), 'sk-a***1234');
   assert.deepEqual(getProviderDisplayParts(API_KEY, providerMap), {

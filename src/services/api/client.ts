@@ -20,6 +20,7 @@ class ApiClient {
   private instance: AxiosInstance;
   private apiBase: string = '';
   private managementKey: string = '';
+  private configRevision: number = 0;
 
   constructor() {
     this.instance = axios.create({
@@ -36,7 +37,11 @@ class ApiClient {
    * 设置 API 配置
    */
   setConfig(config: ApiClientConfig): void {
-    this.apiBase = computeApiUrl(config.apiBase);
+    const nextApiBase = computeApiUrl(config.apiBase);
+    if (nextApiBase !== this.apiBase || config.managementKey !== this.managementKey) {
+      this.configRevision += 1;
+    }
+    this.apiBase = nextApiBase;
     this.managementKey = config.managementKey;
 
     if (config.timeout) {
@@ -44,6 +49,10 @@ class ApiClient {
     } else {
       this.instance.defaults.timeout = REQUEST_TIMEOUT_MS;
     }
+  }
+
+  getConfigRevision(): number {
+    return this.configRevision;
   }
 
   private readHeader(headers: Record<string, unknown> | undefined, keys: string[]): string | null {

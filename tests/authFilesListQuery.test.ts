@@ -3,7 +3,7 @@ import axios from 'axios';
 import { buildAuthFilesListParams, type AuthFilesListQuery } from '@/features/authFiles/listQuery';
 import { authFilesApi } from '@/services/api/authFiles';
 import { apiClient } from '@/services/api/client';
-import { monitorApi } from '@/services/api/monitor';
+import { KEY_STATS_STALE_TIME_MS, monitorApi } from '@/services/api/monitor';
 
 const query: AuthFilesListQuery = {
   page: 2,
@@ -158,6 +158,88 @@ describe('auth-file list query contracts', () => {
       );
       expect(result.filter).toEqual({ auth_indexes: ['auth-a'], auth_index: 'auth-a' });
     } finally {
+      getSpy.mockRestore();
+    }
+  });
+
+  test('reuses full key stats within one connection and bypasses cache on refresh', async () => {
+    const response = {
+      by_source: {},
+      by_auth_index: {},
+      block_config: { count: 0, duration_ms: 0, window_start_ms: 0 },
+    };
+    const getSpy = spyOn(apiClient, 'get').mockResolvedValue(response);
+    const revisionSpy = spyOn(apiClient, 'getConfigRevision').mockReturnValue(10_001);
+    const nowSpy = spyOn(Date, 'now').mockReturnValue(1_000_000);
+
+    try {
+      await monitorApi.getKeyStats();
+      await monitorApi.getKeyStats();
+      expect(getSpy).toHaveBeenCalledTimes(1);
+
+      nowSpy.mockReturnValue(1_000_000 + KEY_STATS_STALE_TIME_MS);
+      await monitorApi.getKeyStats();
+      expect(getSpy).toHaveBeenCalledTimes(2);
+
+      await monitorApi.getKeyStats([], { forceRefresh: true });
+      expect(getSpy).toHaveBeenCalledTimes(3);
+
+      revisionSpy.mockReturnValue(10_002);
+      await monitorApi.getKeyStats();
+      expect(getSpy).toHaveBeenCalledTimes(4);
+    } finally {
+      nowSpy.mockRestore();
+      revisionSpy.mockRestore();
+      getSpy.mockRestore();
+    }
+  });
+
+  test('isolates in-flight full key stats when the API connection changes', async () => {
+    let configRevision = 20_001;
+    const oldResponse = {
+      by_source: {},
+      by_auth_index: {},
+      block_config: { count: 0, duration_ms: 0, window_start_ms: 0 },
+    };
+    const newResponse = {
+      by_source: { codex: { total: 1 } },
+      by_auth_index: {},
+      block_config: { count: 0, duration_ms: 0, window_start_ms: 0 },
+    };
+    let resolveOldRequest!: (value: typeof oldResponse) => void;
+    let markOldRequestStarted!: () => void;
+    const oldRequestStarted = new Promise<void>((resolve) => {
+      markOldRequestStarted = resolve;
+    });
+    const oldRequest = new Promise<typeof oldResponse>((resolve) => {
+      resolveOldRequest = resolve;
+    });
+    const getSpy = spyOn(apiClient, 'get')
+      .mockImplementationOnce(async () => {
+        markOldRequestStarted();
+        return oldRequest;
+      })
+      .mockResolvedValueOnce(newResponse);
+    const revisionSpy = spyOn(apiClient, 'getConfigRevision').mockImplementation(
+      () => configRevision
+    );
+
+    try {
+      const pendingOldRequest = monitorApi.getKeyStats([], { forceRefresh: true });
+      await oldRequestStarted;
+
+      configRevision = 20_002;
+      const currentResponse = await monitorApi.getKeyStats([], { forceRefresh: true });
+      resolveOldRequest(oldResponse);
+      await pendingOldRequest;
+
+      expect(getSpy).toHaveBeenCalledTimes(2);
+      expect(currentResponse).toBe(newResponse);
+
+      await monitorApi.getKeyStats();
+      expect(getSpy).toHaveBeenCalledTimes(2);
+    } finally {
+      revisionSpy.mockRestore();
       getSpy.mockRestore();
     }
   });

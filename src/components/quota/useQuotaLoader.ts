@@ -55,18 +55,16 @@ export function useQuotaLoader<TState, TData>(config: QuotaConfig<TState, TData>
           return nextState;
         });
 
-        const results = await Promise.all(
-          targets.map(async (file): Promise<LoadQuotaResult<TData>> => {
-            try {
-              const data = await config.fetchQuota(file, t);
-              return { name: file.name, status: 'success', data };
-            } catch (err: unknown) {
-              const message = err instanceof Error ? err.message : t('common.unknown_error');
-              const errorStatus = getStatusFromError(err);
-              return { name: file.name, status: 'error', error: message, errorStatus };
-            }
-          })
-        );
+        const batchResults = await config.fetchQuotaBatch(targets, t);
+        const results: LoadQuotaResult<TData>[] = batchResults.map((result) => {
+          if (result.status === 'success') return result;
+          return {
+            name: result.name,
+            status: 'error',
+            error: result.error instanceof Error ? result.error.message : t('common.unknown_error'),
+            errorStatus: getStatusFromError(result.error),
+          };
+        });
 
         if (!loadCoordinatorRef.current.isCurrent(requestId)) return;
 

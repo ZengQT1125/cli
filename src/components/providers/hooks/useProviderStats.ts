@@ -1,9 +1,11 @@
 import { useCallback, useRef, useState } from 'react';
 import { useInterval } from '@/hooks/useInterval';
-import { monitorApi, type MonitorKeyStatsResponse } from '@/services/api/monitor';
+import {
+  KEY_STATS_STALE_TIME_MS,
+  monitorApi,
+  type MonitorKeyStatsResponse,
+} from '@/services/api/monitor';
 import { blocksToStatusBarData, type KeyStats, type StatusBarData } from '@/utils/usage';
-
-const STALE_TIME_MS = 240_000;
 
 const EMPTY_KEY_STATS: KeyStats = { bySource: {}, byAuthIndex: {} };
 
@@ -45,7 +47,10 @@ export const useProviderStats = (options: UseProviderStatsOptions = {}) => {
   const lastRefreshedAt = useRef<number | null>(null);
 
   const loadKeyStats = useCallback(async () => {
-    if (lastRefreshedAt.current && Date.now() - lastRefreshedAt.current < STALE_TIME_MS) {
+    if (
+      lastRefreshedAt.current &&
+      Date.now() - lastRefreshedAt.current < KEY_STATS_STALE_TIME_MS
+    ) {
       return;
     }
     setIsLoading(true);
@@ -65,7 +70,7 @@ export const useProviderStats = (options: UseProviderStatsOptions = {}) => {
   const refreshKeyStats = useCallback(async () => {
     setIsLoading(true);
     try {
-      const response = await monitorApi.getKeyStats();
+      const response = await monitorApi.getKeyStats([], { forceRefresh: true });
       const result = processKeyStatsResponse(response);
       setKeyStats(result.keyStats);
       setStatusBarBySource(result.statusBarBySource);
